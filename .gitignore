@@ -11,3 +11,6 @@
 
 # Library implementation
 !src/
+!src/qif_micro/
+!src/qif_micro/**/
+!src/qif_micro/**/*.py
