@@ -1,0 +1,22 @@
+[project]
+name = "qif-micro"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Luigi D. C. Soares", email = "dev@luigidcsoares.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "polars>=1.32.3",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "jupyter>=1.1.1",
+    "pytest>=8.4.1",
+]

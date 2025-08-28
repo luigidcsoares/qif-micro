@@ -1,0 +1,13 @@
+# Ignore everything by default, and then whitelist as needed
+*
+!.gitignore
+
+# Project & environment configuration
+!flake.nix
+!flake.lock
+!.python-version
+!pyproject.toml
+!uv.lock
+
+# Library implementation
+!src/
