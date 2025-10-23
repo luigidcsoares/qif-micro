@@ -1,15 +1,12 @@
-import math
-
 import polars
 
-from qif_micro.typing import Channel, ProbabDist
-from qif_micro.typing import FieldName 
+from qif_micro.datatypes import Channel, ProbabDist
 
 def build(
     dataset: polars.DataFrame,
-    owner_field: FieldName,
-    count_field: FieldName,
-    sum_field: FieldName
+    owner_field: str,
+    count_field: str,
+    sum_field: str
 ) -> tuple[ProbabDist, Channel]:
     """
     The input to this function is a dataset that is result of
@@ -44,7 +41,7 @@ def build(
     ...     count_field,
     ...     sum_field
     ... )
-    >>> prior.sort(by=[count_field, sum_field]).collect()
+    >>> prior.dist.sort(by=[count_field, sum_field]).collect()
     shape: (2, 3)
     ┌───────┬─────┬──────────┐
     │ count ┆ sum ┆ p        │
@@ -54,7 +51,7 @@ def build(
     │ 2     ┆ 2   ┆ 0.666667 │
     │ 3     ┆ 2   ┆ 0.333333 │
     └───────┴─────┴──────────┘
-    >>> channel.sort(by=[count_field, sum_field, "qid"]).collect()
+    >>> channel.dist.sort(by=[count_field, sum_field, "qid"]).collect()
     shape: (6, 4)
     ┌───────┬─────┬─────┬──────────┐
     │ count ┆ sum ┆ qid ┆ p        │
@@ -77,14 +74,6 @@ def build(
     # We assume the dataset fits in memory, but the prior and channel
     # could be really large, so we from this point we rely on laziness
     dataset_lazy = dataset.lazy()
-    prior = (
-        dataset_lazy
-        .group_by("count", "sum")
-        .agg(p=polars.len() / dataset.height)
-    )
-    
-    prior_sum = prior.select(polars.col("p").sum()).collect()
-    assert math.isclose(prior_sum.item(), 1.0)
 
     # If count > 1, numerator goes from qid - count + 2 to qid - 1
     start_numerator = polars.col("qid") - polars.col("count") + 2
@@ -115,7 +104,7 @@ def build(
     is_length_one = polars.col(count_field) == 1
     is_sum_qid = polars.col("qid") == polars.col(sum_field)
 
-    channel = dataset_with_qids.with_columns(
+    ch_dist = dataset_with_qids.with_columns(
         idx_num=polars.int_ranges(start_numerator, end_numerator),
         idx_denom=polars.int_ranges(start_denominator, end_denominator)
     ).with_columns(
@@ -134,14 +123,13 @@ def build(
         )
     ))
 
-    # ---
-    # To transform the lazy channel into matrix-like format, do:
-    # ---
-    # _channel = channel.drop(count_field, sum_field).collect()
-    # _channel.pivot(on="qid", index=[count_field, sum_field], values="p")
+    prior_dist = (
+        dataset_lazy
+        .group_by("count", "sum")
+        .agg(p=polars.len() / dataset.height)
+    )
 
-    channel_sum = channel.select(polars.col("p").sum()).collect()
-    expected_sum = prior.select(polars.col("p").len()).collect()
-    assert math.isclose(channel_sum.item(), expected_sum.item())
+    prior = ProbabDist.from_polars(prior_dist, [count_field, sum_field])
+    ch = Channel.from_polars(ch_dist, [count_field, sum_field], ["qid"])
 
-    return prior, channel
+    return prior, ch

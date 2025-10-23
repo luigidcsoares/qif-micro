@@ -17,6 +17,7 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
+    "altair>=5.5.0",
     "jupyter>=1.1.1",
     "pytest>=8.4.1",
 ]

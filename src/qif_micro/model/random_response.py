@@ -1,21 +1,21 @@
-import math
+from typing import Any
 
 import polars
 
-from qif_micro.typing import Channel, ProbabDist
-from qif_micro.typing import FieldName, FieldValue
+from qif_micro import qif
+from qif_micro.datatypes import Channel, Joint, ProbabDist
 
 def build(
     dataset: polars.DataFrame,
-    owner_field: FieldName,
-    qid_field: FieldName,
-    qid_domain: list[FieldValue],
-    sensitive_field: FieldName,
+    owner_attr: str,
+    qid_attr: str,
+    qid_domain: list[Any],
+    sensitive_attr: str,
     p_keep: float,
 ) -> tuple[ProbabDist, Channel]:
     """
     The input to this function is a dataset that is result of
-    applying random response to the qid_field of the original data. 
+    applying random response to the qid_attr of the original data. 
 
     We assume that random response is implemented as follows:
     - The probability of preserving the qid value is p_keep
@@ -24,7 +24,7 @@ def build(
 
     This function then returns the adversary's intermediate knowledge
     (i.e., after the dataset has been observed) and the channel that
-    models the relation between the sensitive_field and the qid_field.
+    models the relation between the sensitive_attr and the qid_attr.
 
     That is, this function models an attribute-inference attack, in
     which the adversary's goal is to guess the sensitive value of a target.
@@ -43,20 +43,20 @@ def build(
     ...     "grade": ["A", "B", "B", "B", "A"],
     ...     "disability": ["yes", "no", "yes", "yes", "no"]
     ... })
-    >>> owner_field = "uid"
-    >>> qid_field = "grade"
+    >>> owner_attr = "uid"
+    >>> qid_attr = "grade"
     >>> qid_domain = ["A", "B", "C"]
-    >>> sensitive_field = "disability"
+    >>> sensitive_attr = "disability"
     >>> p_keep = 3/4
     >>> prior, channel = model.random_response.build(
     ...     dataset,
-    ...     owner_field,
-    ...     qid_field,
+    ...     owner_attr,
+    ...     qid_attr,
     ...     qid_domain,
-    ...     sensitive_field,
+    ...     sensitive_attr,
     ...     p_keep
     ... )
-    >>> prior.sort(by=sensitive_field).collect()
+    >>> prior.dist.sort(by=sensitive_attr).collect()
     shape: (2, 2)
     ┌────────────┬─────┐
     │ disability ┆ p   │
@@ -66,7 +66,7 @@ def build(
     │ no         ┆ 0.4 │
     │ yes        ┆ 0.6 │
     └────────────┴─────┘
-    >>> channel.sort(by=[sensitive_field, "qid"]).collect()
+    >>> channel.dist.sort(by=[sensitive_attr, "qid"]).collect()
     shape: (6, 3)
     ┌────────────┬─────┬──────────┐
     │ disability ┆ qid ┆ p        │
@@ -81,51 +81,36 @@ def build(
     │ yes        ┆ C   ┆ 0.125    │
     └────────────┴─────┴──────────┘
     """
-    assert owner_field in dataset.columns
+    assert owner_attr in dataset.columns
 
-    n_records = dataset.get_column(owner_field).n_unique()
+    n_records = dataset.get_column(owner_attr).n_unique()
     assert n_records == dataset.height
 
     expr_match = p_keep / n_records
     expr_conflict = (1 - p_keep) / (n_records *(len(qid_domain) - 1))
 
     # We assume the dataset fits in memory, but the prior and channel
-    # could be really large, so we from this point we rely on laziness
-    joint = dataset.lazy().with_columns(qid=qid_domain).explode("qid")
-    joint = joint.select(
-        sensitive_field, "qid",
-        p=polars
-        .when(polars.col(qid_field) == polars.col("qid"))
-        .then(expr_match)
-        .otherwise(expr_conflict)
+    # could be really large, so from this point on we rely on laziness
+    joint_dist_records = (
+        dataset.lazy()
+        .with_columns(qid=qid_domain)
+        .explode("qid")
+        .select(
+            sensitive_attr, "qid",
+            p=polars
+            .when(polars.col(qid_attr) == polars.col("qid"))
+            .then(expr_match)
+            .otherwise(expr_conflict)
+        )
     )
 
-    joint_sensitive = joint.group_by(sensitive_field, "qid").sum()
-
-    prior = (
-        joint_sensitive
-        .group_by(sensitive_field)
-        .agg(p=polars.col("p").sum())
+    joint_dist_sens = (
+        joint_dist_records
+        .group_by(sensitive_attr, "qid")
+        .sum()
     )
 
-    prior_sum = prior.select(polars.col("p").sum()).collect()
-    assert math.isclose(prior_sum.item(), 1.0)
+    joint = Joint.from_polars(joint_dist_sens, [sensitive_attr], ["qid"])
+    prior, ch = qif.push_back(joint)
 
-    channel = (
-        joint_sensitive
-        .join(prior, on=sensitive_field, how="inner")
-        .with_columns(p=polars.col("p") / polars.col("p_right"))
-        .drop("p_right")
-    )
-
-    # ---
-    # To transform the lazy channel into matrix-like format, do:
-    # ---
-    # _channel = channel.drop(count_field, sum_field).collect()
-    # _channel.pivot(on="qid", index=[count_field, sum_field], values="p")
-
-    channel_sum = channel.select(polars.col("p").sum()).collect()
-    expected_sum = prior.select(polars.col("p").len()).collect()
-    assert math.isclose(channel_sum.item(), expected_sum.item())
-
-    return prior, channel
+    return prior, ch
