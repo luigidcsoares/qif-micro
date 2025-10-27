@@ -76,21 +76,20 @@ def build(
     dataset_lazy = dataset.lazy()
 
     # If count > 1, numerator goes from qid - count + 2 to qid - 1
-    start_numerator = polars.col("qid") - polars.col("count") + 2
+    start_numerator = polars.col("qid") - polars.col(count_field) + 2
     end_numerator = polars.col("qid")
 
     # If count > 1, denominator goes from to count - 2
     start_denominator = 0
-    end_denominator = polars.col("count") - 1
-
-    max_sum = dataset.select("sum").max().item()
+    end_denominator = polars.col(count_field) - 1
 
     dataset_with_qids = (
         dataset_lazy
         .select(count_field, sum_field)
         .unique()
-        .with_columns(qid=polars.int_ranges(0, max_sum + 1))
+        .with_columns(qid=polars.int_ranges(0, polars.col("sum") + 1))
         .explode("qid")
+        .with_columns(qid=polars.col("qid").cast(float))
     )
 
     product = polars.element().product()
@@ -121,7 +120,7 @@ def build(
             * polars.col("prod_num")
             / polars.col("prod_denom")
         )
-    ))
+    )).filter(polars.col("p") > 0)
 
     prior_dist = (
         dataset_lazy
