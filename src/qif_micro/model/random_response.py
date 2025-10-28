@@ -32,7 +32,7 @@ def build(
     Limitations:
     - We require that the the length of records is one; that is, each
       individual owns a single row of the dataset
-    - We accept only a single field as QID and a single field as sensitive
+    - We accept only a single attr as QID and a single attr as sensitive
 
     ## Example
 
