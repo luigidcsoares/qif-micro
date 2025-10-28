@@ -14,3 +14,7 @@
 !src/qif_micro/
 !src/qif_micro/**/
 !src/qif_micro/**/*.py
+
+# Jupyter notebooks with examples
+!examples/
+!examples/agg-count-sum.ipynb
