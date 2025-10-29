@@ -1,25 +1,45 @@
+from enum import Enum, auto
+
 import polars
 
 from qif_micro import qif
 from qif_micro.datatypes import Channel, Joint, ProbabDist
 
+class ProcessMethod(Enum):
+    AS_INT = auto()
+    CEIL = auto()
+    ROUND = auto()
+
+
+def _process_expr(method: ProcessMethod, col_name: str) -> polars.Expr:
+    col_expr = polars.col(col_name)
+    match method:
+        case ProcessMethod.AS_INT: return (col_expr * 10).cast(int)
+        case ProcessMethod.CEIL: return col_expr.ceil()
+        case ProcessMethod.ROUND: return col_expr.round()
+
 def build(
     dataset: polars.DataFrame,
     owner_attr: str,
     count_attr: str,
-    sum_attr: str
+    sum_attr: str,
+    pre_process: ProcessMethod = ProcessMethod.CEIL
 ) -> tuple[ProbabDist, Channel]:
     """
     The input to this function is a dataset that is result of
     aggregating some original data by count and sum.
 
-    We assume that the original data that has been aggregated are
-    non-negative integers (>= 0). We assume also that the adversary
-    knows/will learn (from external sources) one of these values.
+    We pre-process the original aggregated sum so that it is an integer.
+    By default, we take the ceil of the sum. This can be controlled 
+    by the `post_process` parameter. 
 
-    This function then returns the adversary's intermediate knowledge
+    We assume the adversary knows/will learn (from external sources) 
+    one of values that have been aggregated into the sum. These values
+    are implicitly post-processed so that they are integers.
+
+        This function then returns the adversary's intermediate knowledge
     (i.e., after the aggregated data has been observed) and the
-    channel that models the relation between each record and qid_attr.
+    channel that models the relation between each record and agg_attr.
 
     That is, this function models an attribute-inference attack, in
     which the adversary's goal is to guess the (count, sum) of a target. 
@@ -74,7 +94,11 @@ def build(
 
     # We assume the dataset fits in memory, but the prior and channel
     # could be really large, so we from this point we rely on laziness
-    dataset_lazy = dataset.lazy()
+    pre_process_sum = _process_expr(pre_process, sum_attr)
+    dataset_lazy = dataset.lazy().select(
+        count_attr,
+        pre_process_sum.name.keep()
+    )
 
     # If count > 1, numerator goes from qid - count + 2 to qid - 1
     start_numerator = polars.col("qid") - polars.col(count_attr) + 2
@@ -86,7 +110,6 @@ def build(
 
     dataset_with_qids = (
         dataset_lazy
-        .select(count_attr, sum_attr)
         .unique()
         .with_columns(qid=polars.int_ranges(0, polars.col(sum_attr) + 1))
         .explode("qid")
@@ -140,7 +163,9 @@ def baseline(
     owner_attr: str,
     count_attr: str,
     sum_attr: str,
-    qid_attr: str
+    agg_attr: str,
+    pre_process: ProcessMethod = ProcessMethod.CEIL,
+    post_process: ProcessMethod = ProcessMethod.CEIL
 ) -> tuple[ProbabDist, Channel]:
     """
     The input to this function is a dataset in the form of microdata.
@@ -148,7 +173,12 @@ def baseline(
     This function then aggregates the original data to generate
     two statistics: count and sum for some QID attribute.
 
-    It returns the adversary's intermediate knowledge with respect
+    We pre-process the original aggregated sum so that it is an integer,
+    and we post-process the `agg_attr` so that it is also an integer.
+    By default, we take the ceil of these numbers. This can be
+    controlled by the `pre_process` and `post_process` parameters.
+
+    This returns the adversary's intermediate knowledge with respect
     to the aggregated record (after the dataset has been observed)
     and the channel that models the relation between each aggregated
     record and the QID attribute.
@@ -158,7 +188,6 @@ def baseline(
     to chosen one record over another. The prior on aggregated records
     is then the number of users whose raw record maps to the same
     aggregated records, normalised by the number of records.
-
 
     In other words, we assume that the QID that the adversary learns
     is a piece of the aggregated value that the adversary wants to infer.
@@ -174,13 +203,13 @@ def baseline(
     >>> owner_attr = "uid"
     >>> count_attr = "count"
     >>> sum_attr = "sum"
-    >>> qid_attr = "transaction_cost"
+    >>> agg_attr = "transaction_cost"
     >>> prior, channel = model.agg_count_sum.baseline(
     ...     dataset,
     ...     owner_attr,
     ...     count_attr,
     ...     sum_attr,
-    ...     qid_attr
+    ...     agg_attr
     ... )
     >>> prior.dist.sort(by=[count_attr, sum_attr]).collect()
     shape: (2, 3)
@@ -192,7 +221,7 @@ def baseline(
     │ 2     ┆ 2.0 ┆ 0.666667 │
     │ 3     ┆ 2.0 ┆ 0.333333 │
     └───────┴─────┴──────────┘
-    >>> channel.dist.sort(by=[count_attr, sum_attr, qid_attr]).collect()
+    >>> channel.dist.sort(by=[count_attr, sum_attr, agg_attr]).collect()
     shape: (5, 4)
     ┌───────┬─────┬──────────────────┬──────────┐
     │ count ┆ sum ┆ transaction_cost ┆ p        │
@@ -208,10 +237,16 @@ def baseline(
     """
     assert owner_attr in dataset.columns
 
+    pre_process_sum = _process_expr(pre_process, sum_attr)
+    post_process_agg = _process_expr(post_process, agg_attr)
+
     dataset_lazy = dataset.lazy().with_columns(**{
         count_attr: polars.len().over(owner_attr),
-        sum_attr: polars.col(qid_attr).sum().over(owner_attr)
-    })
+        sum_attr: polars.col(agg_attr).sum().over(owner_attr)
+    }).with_columns(
+        pre_process_sum.name.keep(),
+        post_process_agg.name.keep()
+    )
 
     prior_dist_owners = (
         dataset_lazy
@@ -225,7 +260,7 @@ def baseline(
         .group_by(polars.all())
         .agg(qid_freq=polars.len())
         .select(
-            owner_attr, count_attr, sum_attr, qid_attr,
+            owner_attr, count_attr, sum_attr, agg_attr,
             p=polars.col("qid_freq") / polars.col("record_len")
         )
     )
@@ -238,20 +273,20 @@ def baseline(
     ch_owners = Channel.from_polars(
         ch_dist_owners,
         [owner_attr, count_attr, sum_attr],
-        [qid_attr]
+        [agg_attr]
     )
 
     joint_owners = qif.push(prior_owners, ch_owners)
     joint_agg_dist = (
         joint_owners.dist
-        .group_by(count_attr, sum_attr, qid_attr)
+        .group_by(count_attr, sum_attr, agg_attr)
         .agg(p=polars.col("p").sum())
     )
 
     joint_agg = Joint.from_polars(
         joint_agg_dist,
         [count_attr, sum_attr],
-        [qid_attr]
+        [agg_attr]
     )
 
     return qif.push_back(joint_agg)
