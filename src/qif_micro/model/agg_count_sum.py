@@ -88,7 +88,7 @@ def build(
         dataset_lazy
         .select(count_attr, sum_attr)
         .unique()
-        .with_columns(qid=polars.int_ranges(0, polars.col("sum") + 1))
+        .with_columns(qid=polars.int_ranges(0, polars.col(sum_attr) + 1))
         .explode("qid")
         .with_columns(qid=polars.col("qid").cast(float))
     )
@@ -125,7 +125,7 @@ def build(
 
     prior_dist = (
         dataset_lazy
-        .group_by("count", "sum")
+        .group_by(count_attr, sum_attr)
         .agg(p=polars.len() / dataset.height)
     )
 
