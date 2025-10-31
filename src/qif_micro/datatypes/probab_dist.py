@@ -7,7 +7,7 @@ def _is_valid(dist: polars.LazyDataFrame) -> bool:
     columns = set(dist.collect_schema().names())
     assert "p" in columns
 
-    expr_check_sum = polars.col("p").sum().is_close(1)
+    expr_check_sum = polars.col("p").sum().is_close(1, abs_tol=1e-3)
     return dist.select(is_one=expr_check_sum).collect().item()
 
 

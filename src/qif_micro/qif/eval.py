@@ -12,34 +12,27 @@ def _strategies(joint: Joint) -> Channel:
     Since we are assuming Bayes in general, this channel actually
     has the same dimensions than the joint.
     """
-    max_output = (
-        joint.dist
-        .group_by(joint.output_names)
-        .agg(max=polars.col("p").max())
+    max_output = joint.dist.group_by(joint.output_names).agg(
+        polars.col("p").max().alias("max")
     )
 
-    masked = (
-        joint.dist
-        .join(max_output, on=joint.output_names, how="inner")
-        .with_columns(p=(
-            polars
-            .col("p")
-            .is_close(polars.col("max"))
-            .cast(polars.Float64)
-        ))
+    masked = joint.dist.join(
+        max_output, on=joint.output_names, how="inner"
+    ).with_columns(
+        polars.col("p").is_close(polars.col("max")) 
+        .cast(polars.Float64)
+        .alias("p")
     )
 
-    count_max = (
-        masked
-        .group_by(joint.output_names)
-        .agg(cmax=polars.col("p").sum())
+    count_max = masked.group_by(joint.output_names).agg(
+        polars.col("p").sum().alias("cmax")
     )
 
-    st_dist = (
-        masked
-        .join(count_max, on=joint.output_names, how="inner")
-        .with_columns(p=polars.col("p") / polars.col("cmax"))
-        .drop(["max", "cmax"])
+    st_dist = masked.join(
+        count_max, on=joint.output_names, how="inner"
+    ).select(
+        polars.exclude("p", "max", "cmax"),
+        (polars.col("p") / polars.col("cmax")).alias("p")
     )
 
     return Channel.from_polars(
@@ -101,8 +94,10 @@ def posterior(prior: ProbabDist, ch: Channel, baseline: Joint) -> float:
     post_vuln = (
         baseline.dist
         .join(strategies.dist, left_on=lcols, right_on=rcols, how="inner")
-        .with_columns(p=polars.col("p") * polars.col("p_right"))
-        .group_by(baseline.output_names)
+        .with_columns(
+            (polars.col("p") * polars.col("p_right"))
+            .alias("p")
+        ).group_by(baseline.output_names)
         .agg(p=polars.col("p").sum())
         .select(polars.col("p").sum())
         .collect()

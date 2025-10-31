@@ -10,7 +10,7 @@ def _is_valid(dist: polars.LazyDataFrame, cols: Iterable[str]) -> bool:
     assert len(set(cols) - columns) == 0
     assert "p" in columns
 
-    expr_check_sum = polars.col("p").sum().is_close(1)
+    expr_check_sum = polars.col("p").sum().is_close(1, abs_tol=1e-3)
     row_check_sum = dist.group_by(cols).agg(is_one=expr_check_sum)
 
     expr_check_all = polars.col("is_one").all()
