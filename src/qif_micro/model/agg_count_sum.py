@@ -1,6 +1,7 @@
 from enum import Enum, auto
 
 import polars
+from scipy.special import gammaln
 
 from qif_micro import qif
 from qif_micro.datatypes import Channel, Joint, ProbabDist
@@ -24,13 +25,14 @@ def _build_ch(
     count_attr: str,
     sum_attr: str
 ) -> polars.LazyFrame:
-    # If count > 1, numerator goes from hint - count + 2 to hint - 1
-    start_numerator = polars.col("hint") - polars.col(count_attr) + 2
-    end_numerator = polars.col("hint")
-
-    # If count > 1, denominator goes from to count - 2
-    start_denominator = 0
-    end_denominator = polars.col(count_attr) - 1
+    log_p = (
+        (polars.col(count_attr) - 1).log() 
+        - (polars.col(sum_attr) + 1).log() 
+        + gammaln(polars.col(sum_attr) + polars.col(count_attr) - polars.col("hint") - 1)
+        - gammaln(polars.col(sum_attr) - polars.col("hint") + 1)
+        + gammaln(polars.col(sum_attr) + 2)
+        - gammaln(polars.col(sum_attr) + polars.col(count_attr))
+    )
 
     dataset_with_hints = (
         dataset
@@ -40,41 +42,15 @@ def _build_ch(
         .with_columns(hint=polars.col("hint").cast(float))
     )
 
-    product = polars.element().product()
-    term_numerator = polars.col(sum_attr) - polars.col("idx_num")
-    term_denominator = (
-        polars.col(sum_attr) 
-            + polars.col(count_attr) - 1
-            - polars.col("idx_denom")
+    ch_dist = dataset_with_hints.with_columns(
+        polars
+        .when(polars.col(count_attr) == 1)
+        .then((polars.col(sum_attr) == polars.col("hint")).cast(float))
+        .otherwise(log_p.exp())
+        .alias("p")
     )
 
-    is_length_one = polars.col(count_attr) == 1
-    is_sum_hint = polars.col("hint") == polars.col(sum_attr)
-
-    tmp_cols = ["idx_num", "idx_denom", "prod_num", "prod_denom"]
-    ch_dist = dataset_with_hints.with_columns(
-        polars.int_ranges(start_numerator, end_numerator)
-        .alias("idx_num"),
-        
-        polars.int_ranges(start_denominator, end_denominator)
-        .alias("idx_denom")
-    ).with_columns(
-        term_numerator.list.eval(product).list.first()
-        .alias("prod_num"),
-
-        term_denominator.list.eval(product).list.first()
-        .alias("prod_denom")
-    ).select(
-        polars.exclude(tmp_cols), 
-        polars
-        .when(is_length_one, is_sum_hint).then(1)
-        .when(is_length_one).then(0)
-        .otherwise((polars.col(count_attr) - 1) * polars.col("prod_num")
-            / polars.col("prod_denom"))
-        .alias("p")
-    ).filter(polars.col("p") > 0)
-
-    return ch_dist
+    return ch_dist.filter(polars.col("p") > 0)
 
 
 def build(
@@ -123,70 +99,66 @@ def build(
     >>> owner_attr = "uid"
     >>> count_attr = "count"
     >>> sum_attr = "sum"
-    >>> prior, channel = model.agg_count_sum.build(
+    >>> prior, ch = model.agg_count_sum.build(
     ...     dataset,
     ...     owner_attr,
     ...     count_attr,
     ...     sum_attr
     ... )
-    >>> prior.dist.sort(by=[count_attr, sum_attr]).collect()
+    >>> prior.dist.sort(by=prior.outcome_names).collect()
     shape: (2, 3)
-    ┌───────┬─────┬──────────┐
-    │ count ┆ sum ┆ p        │
-    │ ---   ┆ --- ┆ ---      │
-    │ i64   ┆ i64 ┆ f64      │
-    ╞═══════╪═════╪══════════╡
-    │ 2     ┆ 2   ┆ 0.666667 │
-    │ 3     ┆ 2   ┆ 0.333333 │
-    └───────┴─────┴──────────┘
-    >>> channel.dist.sort(by=[count_attr, sum_attr, "hint"]).collect()
+    ┌───────────┬───────────┬──────────┐
+    │ count     ┆ sum       ┆ p        │
+    │ ---       ┆ ---       ┆ ---      │
+    │ list[i64] ┆ list[i64] ┆ f64      │
+    ╞═══════════╪═══════════╪══════════╡
+    │ [2]       ┆ [2]       ┆ 0.666667 │
+    │ [3]       ┆ [2]       ┆ 0.333333 │
+    └───────────┴───────────┴──────────┘
+    >>> ch.dist.sort(by=ch.input_names + ch.output_names).collect()
     shape: (6, 4)
-    ┌───────┬─────┬─────┬──────────┐
-    │ count ┆ sum ┆ hint ┆ p        │
-    │ ---   ┆ --- ┆ --- ┆ ---      │
-    │ i64   ┆ i64 ┆ f64 ┆ f64      │
-    ╞═══════╪═════╪═════╪══════════╡
-    │ 2     ┆ 2   ┆ 0.0 ┆ 0.333333 │
-    │ 2     ┆ 2   ┆ 1.0 ┆ 0.333333 │
-    │ 2     ┆ 2   ┆ 2.0 ┆ 0.333333 │
-    │ 3     ┆ 2   ┆ 0.0 ┆ 0.5      │
-    │ 3     ┆ 2   ┆ 1.0 ┆ 0.333333 │
-    │ 3     ┆ 2   ┆ 2.0 ┆ 0.166667 │
-    └───────┴─────┴─────┴──────────┘
+    ┌───────────┬───────────┬──────┬──────────┐
+    │ count     ┆ sum       ┆ hint ┆ p        │
+    │ ---       ┆ ---       ┆ ---  ┆ ---      │
+    │ list[i64] ┆ list[i64] ┆ f64  ┆ f64      │
+    ╞═══════════╪═══════════╪══════╪══════════╡
+    │ [2]       ┆ [2]       ┆ 0.0  ┆ 0.333333 │
+    │ [2]       ┆ [2]       ┆ 1.0  ┆ 0.333333 │
+    │ [2]       ┆ [2]       ┆ 2.0  ┆ 0.333333 │
+    │ [3]       ┆ [2]       ┆ 0.0  ┆ 0.5      │
+    │ [3]       ┆ [2]       ┆ 1.0  ┆ 0.333333 │
+    │ [3]       ┆ [2]       ┆ 2.0  ┆ 0.166667 │
+    └───────────┴───────────┴──────┴──────────┘
     """
+    # If there's no column to split, we create a temporary one,
+    # just so we can reuse the same logic...
+    split_attr = "tmp" if split_attr is None else split_attr
+    
     # `split_attr` must come first, for sorting!
-    input_attrs = (
-        [] if split_attr is None else [split_attr]
-    ) + [count_attr, sum_attr]
+    ext_input_attrs = [split_attr, count_attr, sum_attr]
 
-    diff = set([owner_attr, *input_attrs]) - set(dataset.columns)
+    dataset_lazy = dataset.lazy().with_columns(
+        polars
+        .coalesce(f"^{split_attr}$", polars.lit(""))
+        .alias(split_attr)
+    )
+
+    dataset_columns = dataset_lazy.collect_schema().names()
+    diff = set([owner_attr, *ext_input_attrs]) - set(dataset_columns)
     if len(diff) > 0: raise ValueError(f"Missing columns {diff}")
 
-    process_sum = _process_expr(pre_process, sum_attr).name.keep()
-    dataset_lazy = dataset.lazy().with_columns(process_sum)
-
-    if split_attr is None: 
-        dataset = dataset_lazy.collect()
-
-        prior_dist = dataset_lazy.group_by(*input_attrs) .agg(
-            (polars.len() / dataset.height).alias("p")
-        )
-
-        ch_dist = _build_ch(dataset_lazy, owner_attr, *input_attrs)
-
-        prior = ProbabDist.from_polars(prior_dist, input_attrs)
-        ch = Channel.from_polars(ch_dist, input_attrs, ["hint"])
-
-        return prior, ch
+    dataset_lazy = dataset_lazy.with_columns(
+        _process_expr(pre_process, sum_attr).name.keep(),
+    )
 
     # Iterate over each of the possible values for `split_attr`,
     # construct individual channels, and then combine them, weighting by
     # the proportion of individual values for each `split_attr` val.
-    struct_expr = polars.struct(input_attrs)
+    struct_expr = polars.struct(ext_input_attrs)
 
     records = (
         dataset_lazy
-        .sort(by=input_attrs)
+        .sort(by=ext_input_attrs)
         .select(owner_attr, struct_expr.alias("record"))
         .group_by(owner_attr, maintain_order=True)
         .agg("record")
@@ -207,15 +179,18 @@ def build(
             extract_field_at(count_attr, v).alias(count_attr),
             extract_field_at(sum_attr, v).alias(sum_attr),
         ).drop_nulls(), count_attr, sum_attr)
-        .with_columns(
-            polars.col("hint").alias("hint_value"),
-            polars.lit(v).alias("hint_" + split_attr)
-        )
+        .with_columns(polars.lit(v).alias("hint_" + split_attr))
     )
 
     split_vals = dataset_lazy.select(polars.col(split_attr).unique())
     extract_field = lambda field: polars.col("record").list.eval(
         el_field(field)
+    )
+
+    input_attrs = [attr for attr in ext_input_attrs if attr != "tmp"]
+    output_attrs = (
+        ["hint"] if split_attr == "tmp" 
+        else ["hint_value", "hint_" + split_attr]
     )
 
     ch_dist = polars.concat(
@@ -229,26 +204,19 @@ def build(
 
         (polars.col("p") * polars.col(count_attr)).alias("p_scaled")
     ).select(
-        extract_field(count_attr).alias(count_attr),
-        extract_field(sum_attr).alias(sum_attr),
-        extract_field(split_attr).alias(split_attr),
-        "hint_value",
-        "hint_" + split_attr,
+        *[extract_field(attr).alias(attr) for attr in input_attrs],
+        *output_attrs,
         (polars.col("p_scaled") / polars.col("total_count")).alias("p")
     )
 
     prior_freq = records.group_by("record").agg(polars.len())
     prior_dist = prior_freq.select(
-        extract_field(count_attr).alias(count_attr),
-        extract_field(sum_attr).alias(sum_attr),
-        extract_field(split_attr).alias(split_attr),
+        *[extract_field(attr).alias(attr) for attr in input_attrs],
         (polars.col("len") / polars.col("len").sum()).alias("p")
     )
 
     prior = ProbabDist.from_polars(prior_dist, input_attrs)
-    ch = Channel.from_polars(ch_dist, input_attrs, [
-        "hint_value", "hint_" + split_attr
-    ])
+    ch = Channel.from_polars(ch_dist, input_attrs, output_attrs)
 
     return prior, ch
 
@@ -307,36 +275,36 @@ def baseline(
     >>> count_attr = "count"
     >>> sum_attr = "sum"
     >>> agg_attr = "transaction_cost"
-    >>> prior, channel = model.agg_count_sum.baseline(
+    >>> prior, ch = model.agg_count_sum.baseline(
     ...     dataset,
     ...     owner_attr,
     ...     count_attr,
     ...     sum_attr,
     ...     agg_attr
     ... )
-    >>> prior.dist.sort(by=[count_attr, sum_attr]).collect()
+    >>> prior.dist.sort(by=prior.outcome_names).collect()
     shape: (2, 3)
-    ┌───────┬─────┬──────────┐
-    │ count ┆ sum ┆ p        │
-    │ ---   ┆ --- ┆ ---      │
-    │ u32   ┆ f64 ┆ f64      │
-    ╞═══════╪═════╪══════════╡
-    │ 2     ┆ 2.0 ┆ 0.666667 │
-    │ 3     ┆ 2.0 ┆ 0.333333 │
-    └───────┴─────┴──────────┘
-    >>> channel.dist.sort(by=[count_attr, sum_attr, agg_attr]).collect()
+    ┌───────────┬───────────┬──────────┐
+    │ count     ┆ sum       ┆ p        │
+    │ ---       ┆ ---       ┆ ---      │
+    │ list[u32] ┆ list[f64] ┆ f64      │
+    ╞═══════════╪═══════════╪══════════╡
+    │ [2]       ┆ [2.0]     ┆ 0.666667 │
+    │ [3]       ┆ [2.0]     ┆ 0.333333 │
+    └───────────┴───────────┴──────────┘
+    >>> ch.dist.sort(by=ch.input_names + ch.output_names).collect()
     shape: (5, 4)
-    ┌───────┬─────┬──────────────────┬──────────┐
-    │ count ┆ sum ┆ transaction_cost ┆ p        │
-    │ ---   ┆ --- ┆ ---              ┆ ---      │
-    │ u32   ┆ f64 ┆ f64              ┆ f64      │
-    ╞═══════╪═════╪══════════════════╪══════════╡
-    │ 2     ┆ 2.0 ┆ 0.0              ┆ 0.25     │
-    │ 2     ┆ 2.0 ┆ 1.0              ┆ 0.5      │
-    │ 2     ┆ 2.0 ┆ 2.0              ┆ 0.25     │
-    │ 3     ┆ 2.0 ┆ 0.0              ┆ 0.333333 │
-    │ 3     ┆ 2.0 ┆ 1.0              ┆ 0.666667 │
-    └───────┴─────┴──────────────────┴──────────┘
+    ┌───────────┬───────────┬───────────────────────┬──────────┐
+    │ count     ┆ sum       ┆ hint_transaction_cost ┆ p        │
+    │ ---       ┆ ---       ┆ ---                   ┆ ---      │
+    │ list[u32] ┆ list[f64] ┆ f64                   ┆ f64      │
+    ╞═══════════╪═══════════╪═══════════════════════╪══════════╡
+    │ [2]       ┆ [2.0]     ┆ 0.0                   ┆ 0.25     │
+    │ [2]       ┆ [2.0]     ┆ 1.0                   ┆ 0.5      │
+    │ [2]       ┆ [2.0]     ┆ 2.0                   ┆ 0.25     │
+    │ [3]       ┆ [2.0]     ┆ 0.0                   ┆ 0.333333 │
+    │ [3]       ┆ [2.0]     ┆ 1.0                   ┆ 0.666667 │
+    └───────────┴───────────┴───────────────────────┴──────────┘
     """
     hint_attrs = [agg_attr] + (
         [] if split_attr is None else [split_attr]
