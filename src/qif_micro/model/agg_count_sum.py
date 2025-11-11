@@ -190,7 +190,7 @@ def build(
     input_attrs = [attr for attr in ext_input_attrs if attr != "tmp"]
     output_attrs = (
         ["hint"] if split_attr == "tmp" 
-        else ["hint_value", "hint_" + split_attr]
+        else ["hint", "hint_" + split_attr]
     )
 
     ch_dist = polars.concat(
