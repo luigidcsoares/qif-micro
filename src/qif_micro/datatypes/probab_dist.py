@@ -1,14 +1,14 @@
 from __future__ import annotations
 from dataclasses import dataclass
 
-import polars
+import polars as pl
 
-def _is_valid(dist: polars.LazyDataFrame) -> bool:
-    columns = set(dist.collect_schema().names())
-    assert "p" in columns
+def _is_valid(dist: pl.LazyDataFrame) -> bool:
+    all_cols = set(dist.collect_schema().names())
+    assert "p" in all_cols
 
-    expr_check_sum = polars.col("p").sum().is_close(1, abs_tol=1e-3)
-    return dist.select(is_one=expr_check_sum).collect().item()
+    expr_check_sum = pl.col("p").sum().is_close(1, abs_tol=0.005)
+    return dist.select(expr_check_sum).collect().item()
 
 
 @dataclass(frozen=True)
@@ -18,23 +18,29 @@ class ProbabDist:
     where x is the outcome of a random variable X,
     Ax is the alphabet, with x in Ax, and Px = {p_x0, p_x1, ...}.
     """
-    dist: polars.LazyDataFrame
-    outcome_names: list[str]
+    dist: pl.LazyDataFrame
+    outcome: list[str]
 
     def __post_init__(self):
         columns = set(self.dist.collect_schema().names())
 
-        assert len(set(self.outcome_names) - columns) == 0
+        assert len(set(self.outcome) - columns) == 0
         assert "p" in columns
 
         if not _is_valid(self.dist):
             raise ValueError("Not a valid probability distribution!")
 
+
+    def __repr__(self):
+        """ Warning: might be expensive!"""
+        sorted_dist = self.dist.sort(self.outcome)
+        return sorted_dist.collect().__repr__()
+
     
     @classmethod
     def from_polars(
         cls,
-        dist: polars.LazyDataFrame,
+        dist: pl.LazyDataFrame,
         outcome_cols: list[str],
         probab_col: str = "p"
     ) -> ProbabDist:

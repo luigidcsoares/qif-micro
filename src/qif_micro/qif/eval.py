@@ -1,4 +1,4 @@
-import polars
+import polars as pl
 
 from .probability import push
 from qif_micro.datatypes import Channel, Joint, ProbabDist
@@ -12,34 +12,30 @@ def _strategies(joint: Joint) -> Channel:
     Since we are assuming Bayes in general, this channel actually
     has the same dimensions than the joint.
     """
-    max_output = joint.dist.group_by(joint.output_names).agg(
-        polars.col("p").max().alias("max")
-    )
+    joint_cols = joint.dist.group_by(joint.output)
+    max_output = joint_cols.agg(pl.col("p").max().alias("max"))
 
-    masked = joint.dist.join(
-        max_output, on=joint.output_names, how="inner"
-    ).with_columns(
-        polars.col("p").is_close(polars.col("max")) 
-        .cast(polars.Float64)
+    cols_with_max = joint.dist.join(max_output, on=joint.output)
+    cols_masked = cols_with_max.with_columns(
+        pl.col("p")
+        .is_close(pl.col("max"))
+        .cast(pl.Float64)
         .alias("p")
     )
 
-    count_max = masked.group_by(joint.output_names).agg(
-        polars.col("p").sum().alias("cmax")
+    count_max = (
+        cols_masked
+        .group_by(joint.output)
+        .agg(pl.col("p").sum().alias("cmax"))
     )
 
-    st_dist = masked.join(
-        count_max, on=joint.output_names, how="inner"
-    ).select(
-        polars.exclude("p", "max", "cmax"),
-        (polars.col("p") / polars.col("cmax")).alias("p")
+    st_dist = cols_masked.join(count_max, on=joint.output).select(
+        *joint.input,
+        *joint.output,
+        (pl.col("p") / pl.col("cmax")).alias("p")
     )
 
-    return Channel.from_polars(
-        st_dist,
-        joint.output_names,
-        joint.input_names
-    )
+    return Channel.from_polars(st_dist, joint.output, joint.input)
 
 
 def posterior(prior: ProbabDist, ch: Channel, baseline: Joint) -> float:
@@ -51,13 +47,13 @@ def posterior(prior: ProbabDist, ch: Channel, baseline: Joint) -> float:
 
     ## Example
 
-    >>> import polars
+    >>> import polars as pl
     >>> from qif_micro import model
     >>> from qif_micro import qif
     >>> from qif_micro.datatypes import ProbabDist, Channel
 
     Consider the following baseline:
-    >>> baseline_dist = polars.LazyFrame({
+    >>> baseline_dist = pl.LazyFrame({
     ...     "X": ["x0", "x1"] * 3,
     ...     "Y": ["y0"] * 2 + ["y1"] * 2 + ["y2"] * 2,
     ...     "p": [1/3, 1/9, 0, 2/9, 1/3, 0]
@@ -65,14 +61,14 @@ def posterior(prior: ProbabDist, ch: Channel, baseline: Joint) -> float:
     >>> baseline = Joint.from_polars(baseline_dist, ["X"], ["Y"])
 
     Furthermore, let's say that the adversary's prior knowledge is
-    >>> prior_dist = polars.LazyFrame({
+    >>> prior_dist = pl.LazyFrame({
     ...     "X": ["x0", "x1"],
     ...     "p": [2/3, 1/3]
     ... })
     >>> prior = ProbabDist.from_polars(prior_dist, ["X"])
 
     and say that the adversary has access to the following system:
-    >>> ch_dist = polars.LazyFrame({
+    >>> ch_dist = pl.LazyFrame({
     ...     "X": ["x0"] * 3 + ["x1"] * 3,
     ...     "Y": ["y0", "y1", "y2"] * 2,
     ...     "p": [1/3, 1/3, 1/3, 1/2, 1/3, 1/6]
@@ -88,18 +84,16 @@ def posterior(prior: ProbabDist, ch: Channel, baseline: Joint) -> float:
     # Joint "input" matches with strategy "output" and vice-versa.
     # That is, strategy takes one of the output as input 
     # and returns the secret that the adversary will guess
-    lcols = baseline.input_names + baseline.output_names
-    rcols = strategies.output_names + strategies.input_names
+    lcols = baseline.input + baseline.output
+    rcols = strategies.output + strategies.input
 
     post_vuln = (
         baseline.dist
-        .join(strategies.dist, left_on=lcols, right_on=rcols, how="inner")
-        .with_columns(
-            (polars.col("p") * polars.col("p_right"))
-            .alias("p")
-        ).group_by(baseline.output_names)
-        .agg(p=polars.col("p").sum())
-        .select(polars.col("p").sum())
+        .join(strategies.dist, left_on=lcols, right_on=rcols)
+        .with_columns((pl.col("p") * pl.col("p_right")).alias("p"))
+        .group_by(baseline.output)
+        .agg(pl.col("p").sum().alias("p"))
+        .select(pl.col("p").sum().alias("p"))
         .collect()
         .item()
     )

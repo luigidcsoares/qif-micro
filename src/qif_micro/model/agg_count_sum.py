@@ -1,6 +1,7 @@
+from collections.abc import Iterable
 from enum import Enum, auto
 
-import polars
+import polars as pl
 from scipy.special import gammaln
 
 from qif_micro import qif
@@ -12,49 +13,58 @@ class ProcessMethod(Enum):
     ROUND = auto()
 
 
-def _process_expr(method: ProcessMethod, col_name: str) -> polars.Expr:
-    col_expr = polars.col(col_name)
+def _process_expr(method: ProcessMethod, col: pl.Expr) -> pl.Expr:
     match method:
-        case ProcessMethod.AS_INT: return (col_expr * 10).cast(int)
-        case ProcessMethod.CEIL: return col_expr.ceil()
-        case ProcessMethod.ROUND: return col_expr.round()
+        case ProcessMethod.AS_INT: return (col * 10).cast(int)
+        case ProcessMethod.CEIL: return col.ceil()
+        case ProcessMethod.ROUND: return col.round()
+
+
+# TODO: move to some utils internal lib
+def _valid_columns(
+    lf: pl.LazyFrame,
+    required: Iterable[str]
+) -> tuple[set[str], bool]:
+    missing = set(required) - set(lf.collect_schema().names())
+    return missing, len(missing) == 0
 
 
 def _build_ch(
-    dataset: polars.LazyFrame,
+    dataset: pl.LazyFrame,
     count_attr: str,
     sum_attr: str
-) -> polars.LazyFrame:
+) -> pl.LazyFrame:
+    n = pl.col(sum_attr)
+    k = pl.col(count_attr)
+    h = pl.col("hint")
+
     log_p = (
-        (polars.col(count_attr) - 1).log() 
-        - (polars.col(sum_attr) + 1).log() 
-        + gammaln(polars.col(sum_attr) + polars.col(count_attr) - polars.col("hint") - 1)
-        - gammaln(polars.col(sum_attr) - polars.col("hint") + 1)
-        + gammaln(polars.col(sum_attr) + 2)
-        - gammaln(polars.col(sum_attr) + polars.col(count_attr))
+        (k - 1).log() - (n + 1).log() 
+        + gammaln(n + k - h - 1) - gammaln(n - h + 1)
+        + gammaln(n + 2) - gammaln(n + k)
     )
 
     dataset_with_hints = (
         dataset
         .unique()
-        .with_columns(hint=polars.int_ranges(0, polars.col(sum_attr) + 1))
+        .with_columns(hint=pl.int_ranges(0, pl.col(sum_attr) + 1))
         .explode("hint")
-        .with_columns(hint=polars.col("hint").cast(float))
+        .with_columns(hint=pl.col("hint").cast(float))
     )
 
     ch_dist = dataset_with_hints.with_columns(
-        polars
-        .when(polars.col(count_attr) == 1)
-        .then((polars.col(sum_attr) == polars.col("hint")).cast(float))
+        pl
+        .when(pl.col(count_attr) == 1)
+        .then((pl.col(sum_attr) == pl.col("hint")).cast(float))
         .otherwise(log_p.exp())
         .alias("p")
     )
 
-    return ch_dist.filter(polars.col("p") > 0)
+    return ch_dist.filter(pl.col("p") > 0)
 
 
 def build(
-    dataset: polars.DataFrame,
+    dataset: pl.LazyFrame | pl.DataFrame,
     owner_attr: str,
     count_attr: str,
     sum_attr: str,
@@ -89,9 +99,9 @@ def build(
 
     ## Example
 
-    >>> import polars
+    >>> import polars as pl
     >>> from qif_micro import model
-    >>> dataset = polars.DataFrame({
+    >>> dataset = pl.DataFrame({
     ...     "uid": [0, 1, 2],
     ...     "count": [2, 2, 3],
     ...     "sum": [2, 2, 2]
@@ -105,7 +115,7 @@ def build(
     ...     count_attr,
     ...     sum_attr
     ... )
-    >>> prior.dist.sort(by=prior.outcome_names).collect()
+    >>> prior
     shape: (2, 3)
     ┌───────────┬───────────┬──────────┐
     │ count     ┆ sum       ┆ p        │
@@ -115,7 +125,7 @@ def build(
     │ [2]       ┆ [2]       ┆ 0.666667 │
     │ [3]       ┆ [2]       ┆ 0.333333 │
     └───────────┴───────────┴──────────┘
-    >>> ch.dist.sort(by=ch.input_names + ch.output_names).collect()
+    >>> ch
     shape: (6, 4)
     ┌───────────┬───────────┬──────┬──────────┐
     │ count     ┆ sum       ┆ hint ┆ p        │
@@ -133,42 +143,42 @@ def build(
     # If there's no column to split, we create a temporary one,
     # just so we can reuse the same logic...
     split_attr = "tmp" if split_attr is None else split_attr
-    
+
     # `split_attr` must come first, for sorting!
     ext_input_attrs = [split_attr, count_attr, sum_attr]
 
-    dataset_lazy = dataset.lazy().with_columns(
-        polars
-        .coalesce(f"^{split_attr}$", polars.lit(""))
+    dataset = dataset.lazy().with_columns(
+        pl.coalesce(f"^{split_attr}$", pl.lit(""))
         .alias(split_attr)
     )
 
-    dataset_columns = dataset_lazy.collect_schema().names()
-    diff = set([owner_attr, *ext_input_attrs]) - set(dataset_columns)
-    if len(diff) > 0: raise ValueError(f"Missing columns {diff}")
+    expected_cols = [owner_attr, *ext_input_attrs]
+    diff, valid = _valid_columns(dataset, expected_cols)
+    if not valid: raise ValueError(f"Missing columns {diff}")
 
-    dataset_lazy = dataset_lazy.with_columns(
-        _process_expr(pre_process, sum_attr).name.keep(),
+    dataset = dataset.with_columns(
+        _process_expr(pre_process, pl.col(sum_attr))
+        .alias(sum_attr)
     )
 
     # Iterate over each of the possible values for `split_attr`,
     # construct individual channels, and then combine them, weighting by
     # the proportion of individual values for each `split_attr` val.
-    struct_expr = polars.struct(ext_input_attrs)
+    struct_expr = pl.struct(ext_input_attrs)
 
     records = (
-        dataset_lazy
-        .sort(by=ext_input_attrs)
+        dataset
+        .sort(ext_input_attrs)
         .select(owner_attr, struct_expr.alias("record"))
         .group_by(owner_attr, maintain_order=True)
         .agg("record")
         .select("record")
     )
 
-    el_field = lambda field: polars.element().struct.field(field)
+    el_field = lambda field: pl.element().struct.field(field)
     subrecord_filter = lambda val: el_field(split_attr) == val
     extract_field_at = lambda field, at: (
-        polars.col("record")
+        pl.col("record")
         .list.filter(subrecord_filter(at))
         .list.first()
         .struct.field(field)
@@ -179,11 +189,11 @@ def build(
             extract_field_at(count_attr, v).alias(count_attr),
             extract_field_at(sum_attr, v).alias(sum_attr),
         ).drop_nulls(), count_attr, sum_attr)
-        .with_columns(polars.lit(v).alias("hint_" + split_attr))
+        .with_columns(pl.lit(v).alias("hint_" + split_attr))
     )
 
-    split_vals = dataset_lazy.select(polars.col(split_attr).unique())
-    extract_field = lambda field: polars.col("record").list.eval(
+    split_vals = dataset.select(pl.col(split_attr).unique())
+    extract_field = lambda field: pl.col("record").list.eval(
         el_field(field)
     )
 
@@ -193,26 +203,26 @@ def build(
         else ["hint", "hint_" + split_attr]
     )
 
-    ch_dist = polars.concat(
+    ch_dist = pl.concat(
         build_ch_with_split(v)
         for v in split_vals.collect().to_series()
     ).with_columns(
-        polars.col("record")
+        pl.col("record")
         .list.eval(el_field(count_attr))
         .list.sum()
         .alias("total_count"),
 
-        (polars.col("p") * polars.col(count_attr)).alias("p_scaled")
+        (pl.col("p") * pl.col(count_attr)).alias("p_scaled")
     ).select(
         *[extract_field(attr).alias(attr) for attr in input_attrs],
         *output_attrs,
-        (polars.col("p_scaled") / polars.col("total_count")).alias("p")
+        (pl.col("p_scaled") / pl.col("total_count")).alias("p")
     )
 
-    prior_freq = records.group_by("record").agg(polars.len())
+    prior_freq = records.group_by("record").agg(pl.len())
     prior_dist = prior_freq.select(
         *[extract_field(attr).alias(attr) for attr in input_attrs],
-        (polars.col("len") / polars.col("len").sum()).alias("p")
+        (pl.col("len") / pl.col("len").sum()).alias("p")
     )
 
     prior = ProbabDist.from_polars(prior_dist, input_attrs)
@@ -222,7 +232,7 @@ def build(
 
 
 def baseline(
-    dataset: polars.DataFrame,
+    dataset: pl.DataFrame | pl.LazyFrame,
     owner_attr: str,
     count_attr: str,
     sum_attr: str,
@@ -265,9 +275,9 @@ def baseline(
 
     ## Example
 
-    >>> import polars
+    >>> import polars as pl
     >>> from qif_micro import model
-    >>> dataset = polars.DataFrame({
+    >>> dataset = pl.DataFrame({
     ...     "uid": [0, 0, 1, 1, 2, 2, 2],
     ...     "transaction_cost": [1.0, 1.0, 0.0, 2.0, 0.0, 1.0, 1.0]
     ... })
@@ -282,7 +292,7 @@ def baseline(
     ...     sum_attr,
     ...     agg_attr
     ... )
-    >>> prior.dist.sort(by=prior.outcome_names).collect()
+    >>> prior
     shape: (2, 3)
     ┌───────────┬───────────┬──────────┐
     │ count     ┆ sum       ┆ p        │
@@ -292,7 +302,7 @@ def baseline(
     │ [2]       ┆ [2.0]     ┆ 0.666667 │
     │ [3]       ┆ [2.0]     ┆ 0.333333 │
     └───────────┴───────────┴──────────┘
-    >>> ch.dist.sort(by=ch.input_names + ch.output_names).collect()
+    >>> ch
     shape: (5, 4)
     ┌───────────┬───────────┬───────────────────────┬──────────┐
     │ count     ┆ sum       ┆ hint_transaction_cost ┆ p        │
@@ -310,17 +320,17 @@ def baseline(
         [] if split_attr is None else [split_attr]
     )
 
-    diff = set([owner_attr, *hint_attrs]) - set(dataset.columns)
-    if len(diff) > 0: raise ValueError(f"Missing columns {diff}")
+    dataset = dataset.lazy()
 
-    process_sum = _process_expr(pre_process, sum_attr)
-    dataset_lazy = dataset.lazy()
+    expected_cols = [owner_attr, *hint_attrs]
+    diff, valid = _valid_columns(dataset, expected_cols)
+    if not valid: raise ValueError(f"Missing columns {diff}")
 
-    dataset_agg_lazy = (
-        dataset_lazy.group_by(owner_attr, split_attr).agg(
-            polars.len().alias(count_attr),
-            polars.col(agg_attr).sum().alias(sum_attr)
-        ).with_columns(process_sum.name.keep())
+    dataset_agg = dataset.group_by(owner_attr, split_attr).agg(
+        pl.len().alias(count_attr),
+
+        _process_expr(pre_process, pl.col(agg_attr).sum())
+        .alias(sum_attr)
     )
 
     # `split_attr` must come first, for sorting!
@@ -328,42 +338,42 @@ def baseline(
         [] if split_attr is None else [split_attr]
     ) + [count_attr, sum_attr]
 
-    struct_expr = polars.struct(input_attrs)
+    struct_expr = pl.struct(input_attrs)
     records = (
-        dataset_agg_lazy
-        .sort(by=input_attrs)
+        dataset_agg
+        .sort(input_attrs)
         .select(owner_attr, struct_expr.alias("record"))
         .group_by(owner_attr, maintain_order=True)
         .agg("record")
     )
 
-    el_field = lambda field: polars.element().struct.field(field)
+    el_field = lambda field: pl.element().struct.field(field)
     extract_field = lambda field: (
-        polars.col("record").list.eval(el_field(field))
+        pl.col("record")
+        .list.eval(el_field(field))
     )
 
-    prior_probab = polars.col("len") / polars.col("len").sum()
     prior_dist_owners = (
         records
         .group_by(owner_attr, "record")
-        .agg(polars.len())
-        .with_columns(prior_probab.alias("p"))
+        .agg(pl.len())
+        .with_columns((pl.col("len") / pl.col("len").sum()).alias("p"))
     )
 
-    record_len = polars.col("record").list.eval(
-        el_field(count_attr)
-    ).list.sum()
+    record_len = (
+        pl.col("record")
+        .list.eval(el_field(count_attr))
+        .list.sum()
+    )
 
-    process_agg = _process_expr(post_process, agg_attr)
-    ch_probab = polars.col("len") / record_len
-
+    process_agg = _process_expr(post_process, pl.col(agg_attr))
     ch_dist_owners = (
         records
-        .join(dataset_lazy, on=owner_attr, how="inner")
-        .with_columns(process_agg.name.keep())
+        .join(dataset, on=owner_attr, how="inner")
+        .with_columns(process_agg.alias(agg_attr))
         .group_by(owner_attr, "record", *hint_attrs)
-        .agg(polars.len())
-        .with_columns(ch_probab.alias("p"))
+        .agg(pl.len())
+        .with_columns((pl.col("len") / record_len).alias("p"))
     )
 
     prior_owners = ProbabDist.from_polars(
@@ -382,7 +392,7 @@ def baseline(
     joint_dist_agg = (
         joint_owners.dist
         .group_by("record", *hint_attrs)
-        .agg(polars.col("p").sum())
+        .agg(pl.col("p").sum().alias("p"))
         .rename(hint_attrs_rename)
         .select(
             *[extract_field(a).alias(a) for a in input_attrs],
@@ -392,7 +402,8 @@ def baseline(
     )
 
     joint_agg = Joint.from_polars(
-        joint_dist_agg, input_attrs, 
+        joint_dist_agg, 
+        input_attrs, 
         list(hint_attrs_rename.values())
     )
 

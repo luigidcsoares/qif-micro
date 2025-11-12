@@ -1,4 +1,4 @@
-import polars
+import polars as pl
 
 from qif_micro.datatypes import Channel, Joint, ProbabDist
 
@@ -10,20 +10,15 @@ def push(prior: ProbabDist, ch: Channel) -> Joint:
     """
     joint_dist = ch.dist.join(
         prior.dist,
-        left_on=ch.input_names,
-        right_on=prior.outcome_names,
-        how="inner"
+        left_on=ch.input,
+        right_on=prior.outcome,
     ).select(
-        polars.exclude("p", "p_right"),
-        polars.col("p") * polars.col("p_right").alias("p")
+        *ch.input,
+        *ch.output,
+        (pl.col("p") * pl.col("p_right")).alias("p")
     )
     
-
-    return Joint.from_polars(
-        joint_dist,
-        ch.input_names,
-        ch.output_names
-    )
+    return Joint.from_polars(joint_dist, ch.input, ch.output)
 
 
 def push_back(joint: Joint) -> tuple[ProbabDist, Channel]:
@@ -31,22 +26,16 @@ def push_back(joint: Joint) -> tuple[ProbabDist, Channel]:
     Decomposes a joint distribution into prior and channel,
     noting that p(x) = sum_x p(x, y) and p(y | x) = p(x, y) / p(x).
     """ 
-    prior_dist = joint.dist.group_by(joint.input_names).agg(
-        polars.col("p").sum()
+    joint_rows = joint.dist.group_by(joint.input)
+    prior_dist = joint_rows.agg(pl.col("p").sum().alias("p"))
+
+    ch_dist = joint.dist.join(prior_dist, on=joint.input).select(
+        *joint.input,
+        *joint.output,
+        (pl.col("p") / pl.col("p_right")).alias("p")
     )
 
-    ch_dist = joint.dist.join(
-        prior_dist, on=joint.input_names, how="inner"
-    ).select(
-        polars.exclude("p", "p_right"),
-        (polars.col("p") / polars.col("p_right")).alias("p")
-    )
-
-    prior = ProbabDist.from_polars(prior_dist, joint.input_names)
-    ch = Channel.from_polars(
-        ch_dist,
-        joint.input_names,
-        joint.output_names
-    )
+    prior = ProbabDist.from_polars(prior_dist, joint.input)
+    ch = Channel.from_polars(ch_dist, joint.input, joint.output)
 
     return prior, ch

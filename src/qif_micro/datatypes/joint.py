@@ -1,14 +1,14 @@
 from __future__ import annotations
 from dataclasses import dataclass
 
-import polars
+import polars as pl
 
-def _is_valid(dist: polars.LazyDataFrame) -> bool:
-    columns = set(dist.collect_schema().names())
-    assert "p" in columns
+def _is_valid(dist: pl.LazyDataFrame) -> bool:
+    all_cols = set(dist.collect_schema().names())
+    assert "p" in all_cols
 
-    expr_check_sum = polars.col("p").sum().is_close(1, abs_tol=1e-3)
-    return dist.select(is_one=expr_check_sum).collect().item()
+    expr_check_sum = pl.col("p").sum().is_close(1, abs_tol=0.005)
+    return dist.select(expr_check_sum).collect().item()
 
 
 @dataclass(frozen=True)
@@ -18,25 +18,31 @@ class Joint:
     of a probabilistic function. That is, given an input x and an 
     output y, the entry x,y of a joint is the joint probability p(x, y).
     """
-    dist: polars.LazyDataFrame
-    input_names: list[str]
-    output_names: list[str]
+    dist: pl.LazyDataFrame
+    input: list[str]
+    output: list[str]
 
     def __post_init__(self):
         columns = set(self.dist.collect_schema().names())
 
-        assert len(set(self.input_names) - columns) == 0
-        assert len(set(self.output_names) - columns) == 0
+        assert len(set(self.input) - columns) == 0
+        assert len(set(self.output) - columns) == 0
         assert "p" in columns
 
         if not _is_valid(self.dist):
             raise ValueError("Not a valid joint distribution!")
 
+
+    def __repr__(self):
+        """ Warning: might be expensive!"""
+        sorted_dist = self.dist.sort(self.input + self.output)
+        return sorted_dist.collect().__repr__()
+
     
     @classmethod
     def from_polars(
         cls,
-        dist: polars.LazyDataFrame,
+        dist: pl.LazyDataFrame,
         input_cols: list[str],
         output_cols: list[str],
         probab_col: str = "p"
