@@ -254,12 +254,14 @@ def build(
         .list.sum()
         .alias("total_count"),
 
-        pl.struct(output_cols).alias("hint"),
-
         (pl.col("p") * pl.col(count_col)).alias("p_scaled")
     ).select(
         *[extract_field(col).alias(col) for col in input_cols],
-        "hint",
+
+        pl.struct(output_cols)
+        .struct.rename_fields(["hint_value", "hint_split"])
+        .alias("hint"),
+
         (pl.col("p_scaled") / pl.col("total_count")).alias("p")
     )
 
@@ -437,7 +439,11 @@ def baseline(
         .agg(pl.col("p").sum().alias("p"))
         .select(
             *[extract_field(a).alias(a) for a in input_cols],
-            pl.struct(hint_cols).alias("hint"),
+
+            pl.struct(hint_cols)
+            .struct.rename_fields(["hint_value", "hint_split"])
+            .alias("hint"),
+
             "p"
         )
     )
