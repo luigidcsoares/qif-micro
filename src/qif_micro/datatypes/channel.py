@@ -4,12 +4,9 @@ from typing import Iterable
 
 import polars as pl
 
+from qif_micro._internal.validation import _valid_columns
+
 def _is_valid(dist: pl.LazyDataFrame, cols: Iterable[str]) -> bool:
-    all_cols = set(dist.collect_schema().names())
-
-    assert len(set(cols) - all_cols) == 0
-    assert "p" in all_cols
-
     expr_check_sum = pl.col("p").sum().is_close(1, abs_tol=0.005)
     row_check_sum = dist.group_by(cols).agg(expr_check_sum.alias("is_one"))
 
@@ -30,11 +27,9 @@ class Channel:
     output: list[str]
 
     def __post_init__(self):
-        columns = set(self.dist.collect_schema().names())
-
-        assert len(set(self.input) - columns) == 0
-        assert len(set(self.output) - columns) == 0
-        assert "p" in columns
+        expected_cols = ["p", *self.input, *self.output]
+        _, ok = _valid_columns(self.dist, expected_cols)
+        assert ok
 
         if not _is_valid(self.dist, self.input):
             raise ValueError("Not a valid channel!")

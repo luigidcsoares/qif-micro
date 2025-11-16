@@ -1,10 +1,10 @@
-from collections.abc import Iterable
 from enum import Enum, auto
 
 import polars as pl
 from scipy.special import gammaln
 
 from qif_micro import qif
+from qif_micro._internal.validation import _valid_columns
 from qif_micro.datatypes import Channel, Joint, ProbabDist
 
 class ProcessMethod(Enum):
@@ -18,15 +18,6 @@ def _process_expr(method: ProcessMethod, col: pl.Expr) -> pl.Expr:
         case ProcessMethod.AS_INT: return (col * 10).cast(int)
         case ProcessMethod.CEIL: return col.ceil()
         case ProcessMethod.ROUND: return col.round()
-
-
-# TODO: move to some utils internal lib
-def _valid_columns(
-    lf: pl.LazyFrame,
-    required: Iterable[str]
-) -> tuple[set[str], bool]:
-    missing = set(required) - set(lf.collect_schema().names())
-    return missing, len(missing) == 0
 
 
 def _build_ch(
@@ -83,7 +74,7 @@ def _fill_invalid(
 
 
 def build(
-    dataset: pl.LazyFrame | pl.DataFrame,
+    dataset: pl.DataFrame | pl.LazyFrame,
     owner_col: str,
     count_col: str,
     sum_col: str,
@@ -204,12 +195,10 @@ def build(
     # Iterate over each of the possible values for `split_col`,
     # construct individual channels, and then combine them, weighting by
     # the proportion of individual values for each `split_col` val.
-    struct_expr = pl.struct(ext_input_cols)
-
     records = (
         dataset
         .sort(ext_input_cols)
-        .select(owner_col, struct_expr.alias("record"))
+        .select(owner_col, pl.struct(ext_input_cols).alias("record"))
         .group_by(owner_col, maintain_order=True)
         .agg("record")
     )
