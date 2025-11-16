@@ -3,7 +3,7 @@ from dataclasses import dataclass
 
 import polars as pl
 
-from qif_micro._internal.validation import _valid_columns
+from qif_micro._internal.dataset import _valid_columns
 
 def _is_valid(dist: pl.LazyDataFrame) -> bool:
     expr_check_sum = pl.col("p").sum().is_close(1, abs_tol=0.005)

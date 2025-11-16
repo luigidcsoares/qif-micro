@@ -4,7 +4,7 @@ import polars as pl
 from scipy.special import gammaln
 
 from qif_micro import qif
-from qif_micro._internal.validation import _valid_columns
+from qif_micro._internal.dataset import _valid_columns
 from qif_micro.datatypes import Channel, Joint, ProbabDist
 
 class ProcessMethod(Enum):

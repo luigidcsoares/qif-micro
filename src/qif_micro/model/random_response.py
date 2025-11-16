@@ -3,7 +3,10 @@ from typing import Any
 import polars as pl
 
 from qif_micro import qif
-from qif_micro._internal.validation import _valid_columns
+from qif_micro._internal.dataset import (
+    _single_record_per_owner,
+    _valid_columns
+)
 from qif_micro.datatypes import Channel, Joint, ProbabDist
 
 def build(
@@ -95,14 +98,7 @@ def build(
         .item()
     )
 
-    single_element_record = (
-        dataset
-        .select(n_records == pl.len())
-        .collect()
-        .item()
-    )
-    
-    if not single_element_record:
+    if not _single_record_per_owner(dataset, owner_col):
         raise ValueError("Variable-length records!")
 
     expr_match = p_keep / n_records
