@@ -16,42 +16,48 @@ def build(
     owner_col: str,
     hint_cols: Iterable[str],
     other_cols: Iterable[str]
-) -> tuple[ProbabDist, Channel]:
+) -> tuple[ProbabDist, Channel, pl.LazyFrame, pl.LazyFrame]:
     """
     ## Example
 
     >>> import polars as pl
     >>> from qif_micro import model
     >>> dataset = pl.DataFrame({
-    ...     "uid": [0, 1, 2, 2, 2],
-    ...     "amount": [1.0, 1.0, 0.0, 1.0, 1.0],
-    ...     "description": ["a", "a", "a", "b", "b"]
+    ...     "uid": [0, 0, 1, 1, 2, 2, 2],
+    ...     "amount": [1.0, 1.0, 0.0, 2.0, 0.0, 1.0, 1.0],
     ... })
     >>> owner_col = "uid"
     >>> hint_cols = ["amount"]
-    >>> other_cols = ["description"]
-    >>> prior, ch = model.raw_microdata.build(dataset, owner_col, hint_cols, other_cols)
+    >>> prior, ch, map_records, map_hints = model.raw_microdata.build(
+    ...     dataset,
+    ...     owner_col,
+    ...     hint_cols,
+    ...     []
+    ... )
     >>> prior
-    shape: (2, 2)
-    ┌─────────────────────────────────┬──────────┐
-    │ record                          ┆ p        │
-    │ ---                             ┆ ---      │
-    │ list[struct[2]]                 ┆ f64      │
-    ╞═════════════════════════════════╪══════════╡
-    │ [{0.0,"a"}, {1.0,"b"}, {1.0,"b… ┆ 0.333333 │
-    │ [{1.0,"a"}]                     ┆ 0.666667 │
-    └─────────────────────────────────┴──────────┘
+    shape: (3, 2)
+    ┌───────────┬──────────┐
+    │ record_id ┆ p        │
+    │ ---       ┆ ---      │
+    │ u32       ┆ f64      │
+    ╞═══════════╪══════════╡
+    │ 1         ┆ 0.333333 │
+    │ 2         ┆ 0.333333 │
+    │ 3         ┆ 0.333333 │
+    └───────────┴──────────┘
     >>> ch
-    shape: (3, 3)
-    ┌─────────────────────────────────┬───────────┬──────────┐
-    │ record                          ┆ hint      ┆ p        │
-    │ ---                             ┆ ---       ┆ ---      │
-    │ list[struct[2]]                 ┆ struct[1] ┆ f64      │
-    ╞═════════════════════════════════╪═══════════╪══════════╡
-    │ [{0.0,"a"}, {1.0,"b"}, {1.0,"b… ┆ {0.0}     ┆ 0.333333 │
-    │ [{0.0,"a"}, {1.0,"b"}, {1.0,"b… ┆ {1.0}     ┆ 0.666667 │
-    │ [{1.0,"a"}]                     ┆ {1.0}     ┆ 1.0      │
-    └─────────────────────────────────┴───────────┴──────────┘
+    shape: (5, 3)
+    ┌───────────┬─────────┬──────────┐
+    │ record_id ┆ hint_id ┆ p        │
+    │ ---       ┆ ---     ┆ ---      │
+    │ u32       ┆ u32     ┆ f64      │
+    ╞═══════════╪═════════╪══════════╡
+    │ 1         ┆ 1       ┆ 0.333333 │
+    │ 1         ┆ 2       ┆ 0.666667 │
+    │ 2         ┆ 1       ┆ 0.5      │
+    │ 2         ┆ 3       ┆ 0.5      │
+    │ 3         ┆ 2       ┆ 1.0      │
+    └───────────┴─────────┴──────────┘
     """
     record_cols = [*hint_cols, *other_cols]
     dataset = _prepare_dataset(dataset.lazy(), owner_col, record_cols)
@@ -62,29 +68,44 @@ def build(
     if not _single_record_per_owner(dataset, owner_col):
         raise ValueError("User owns more than one record!")
 
+    expr_record_id = pl.col("record").rank("dense").alias("record_id")
+    dataset = dataset.select("record", expr_record_id)
+
     expr_p = (pl.col("len") / pl.col("len").sum()).alias("p")
     prior_dist = (
         dataset
-        .group_by("record")
+        .group_by("record_id")
         .agg(pl.len())
-        .select("record", expr_p)
+        .select("record_id", expr_p)
     )
 
-    prior = ProbabDist.from_polars(prior_dist, ["record"])
+    prior = ProbabDist.from_polars(prior_dist, ["record_id"])
 
-    expr_p = (pl.col("len") / pl.col("record").list.len()).alias("p")
-    ch_dist = (
+    expr_hint = pl.struct(hint_cols).alias("hint")
+    expr_hint_id = pl.col("hint").rank("dense").alias("hint_id")
+    expr_record_len = pl.col("record").list.len().alias("record_len")
+    
+    dataset_with_meta = ( 
         dataset
-        .select("record")
         .unique()
         .pipe(_extract_from_record, hint_cols)
+        .select(pl.exclude("record"), expr_record_len)
         .explode(hint_cols)
-        .with_columns(pl.struct(hint_cols).alias("hint"))
-        .group_by("record", "hint")
-        .agg(pl.len())
-        .select("record", "hint", expr_p)
+        .select("record_id", "record_len", expr_hint)
+        .with_columns(expr_hint_id)
     )
 
-    ch = Channel.from_polars(ch_dist, ["record"], ["hint"])
+    expr_p = (pl.col("len") / pl.col("record_len")).alias("p")
+    ch_dist = (
+        dataset_with_meta
+        .group_by("record_id", "hint_id")
+        .agg(pl.len(), pl.col("record_len").first())
+        .select("record_id", "hint_id", expr_p)
+    )
 
-    return prior, ch
+    ch = Channel.from_polars(ch_dist, ["record_id"], ["hint_id"])
+
+    map_records = dataset.unique()
+    map_hints = dataset_with_meta.select("hint", "hint_id").unique()
+
+    return prior, ch, map_records, map_hints
