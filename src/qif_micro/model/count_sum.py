@@ -191,7 +191,7 @@ def build(
 
     has_hints = hints is not None
     if has_hints:
-        diff, ok = _valid_columns(dataset, hint_cols)
+        diff, ok = _valid_columns(hints.lazy(), hint_cols)
         if not ok: raise ValueError(f"Missing columns {diff} in hints")
 
     record_cols = [split_col, count_col, sum_col]
