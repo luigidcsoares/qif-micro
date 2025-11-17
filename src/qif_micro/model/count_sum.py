@@ -133,7 +133,7 @@ def build(
     >>> owner_col = "uid"
     >>> count_col = "count"
     >>> sum_col = "sum"
-    >>> prior, ch = model.agg_count_sum.build(
+    >>> prior, ch = model.count_sum.build(
     ...     dataset,
     ...     owner_col,
     ...     count_col,
@@ -323,7 +323,7 @@ def baseline(
     >>> owner_col = "uid"
     >>> agg_col = "amount"
     >>> split_col = "category"
-    >>> prior, ch, map_records, map_hints, = model.agg_count_sum.baseline(
+    >>> prior, ch, map_records, map_hints, = model.count_sum.baseline(
     ...     dataset,
     ...     owner_col,
     ...     agg_col,
