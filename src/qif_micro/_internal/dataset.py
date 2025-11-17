@@ -27,13 +27,19 @@ def _prepare_dataset(
     diff, ok = _valid_columns(dataset, expected_cols)
     if not ok: raise ValueError(f"Missing columns {diff}")
 
-    return (
+    dataset = (
         dataset
         .sort(record_cols)
         .with_columns(pl.struct(record_cols).alias("record"))
         .group_by(owner_col, maintain_order=True)
         .agg("record")
     )
+
+    _, ok = _valid_columns(dataset, [owner_col, "record"])
+    assert ok
+    assert _single_record_per_owner(dataset, owner_col)
+
+    return dataset
 
 
 def _single_record_per_owner(

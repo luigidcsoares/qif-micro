@@ -4,8 +4,14 @@ import polars as pl
 from scipy.special import gammaln
 
 from qif_micro import qif
-from qif_micro._internal.dataset import _valid_columns
+from qif_micro._internal.dataset import (
+    _extract_from_record,
+    _prepare_dataset,
+    _single_record_per_owner,
+    _valid_columns
+)
 from qif_micro.datatypes import Channel, Joint, ProbabDist
+from qif_micro.model import raw_microdata
 
 class ProcessMethod(Enum):
     AS_INT = auto()
@@ -13,7 +19,8 @@ class ProcessMethod(Enum):
     ROUND = auto()
 
 
-def _process_expr(method: ProcessMethod, col: pl.Expr) -> pl.Expr:
+def _process_expr(method: ProcessMethod, col: str | pl.Expr) -> pl.Expr:
+    col = pl.col(col) if isinstance(col, str) else col
     match method:
         case ProcessMethod.AS_INT: return (col * 10).cast(int)
         case ProcessMethod.CEIL: return col.ceil()
@@ -98,7 +105,7 @@ def build(
     (i.e., after the aggregated data has been observed) and the
     channel that models the relation between each record and agg_col.
 
-    That is, this function models an colibute-inference attack, in
+    That is, this function models an attribute-inference attack, in
     which the adversary's goal is to guess a target's (count, sum).
 
     A record is usually considered to be 1-dimensional, but this can be
@@ -271,44 +278,38 @@ def build(
 def baseline(
     dataset: pl.DataFrame | pl.LazyFrame,
     owner_col: str,
-    count_col: str,
-    sum_col: str,
     agg_col: str,
     split_col: str | None = None,
-    pre_process: ProcessMethod = ProcessMethod.CEIL,
-    post_process: ProcessMethod = ProcessMethod.CEIL
-) -> tuple[ProbabDist, Channel]:
+    count_col: str = "count",
+    sum_col: str = "sum",
+    process_method: ProcessMethod = ProcessMethod.CEIL,
+) -> tuple[ProbabDist, Channel, pl.LazyFrame, pl.LazyFrame]:
     """
     The input to this function is a dataset in the form of microdata.
 
     This function then aggregates the original data to generate
-    two statistics: count and sum for some QID colibute.
+    two statistics: count and sum for some QID attributes (hints).
 
-    We pre-process the original aggregated sum so that it is an integer,
-    and we post-process the `agg_col` so that it is also an integer.
-    By default, we take the ceil of these numbers. This can be
-    controlled by the `pre_process` and `post_process` parameters.
+    For performance reasons, we process the `agg_col` so that it is
+    an integer. This way, both the hint observed by the adversary
+    and the sum over `agg_col` are integers. This might underestimate
+    privacy risk a bit, but it is much cheaper to implement.
+    By default, we take the ceil of `agg_col`. This can be controlled by
+    the `process_method` parameter.
 
     This returns the adversary's intermediate knowledge with respect
     to the aggregated record (after the dataset has been observed)
     and the channel that models the relation between each aggregated
-    record and the QID colibute.
-
-    We assume that the prior on raw records (group of rows per user)
-    is uniform, as beforehand the adversary would have not reason
-    to chosen one record over another. The prior on aggregated records
-    is then the number of users whose raw record maps to the same
-    aggregated records, normalised by the number of records.
-
-    In other words, we assume that the QID that the adversary learns
-    is a piece of the aggregated value that the adversary wants to infer.
+    record and the QID attributes. In other words, we assume that the
+    QID that the adversary learns is a piece of the aggregated value
+    that the adversary wants to infer.
 
     A record is usually considered to be 1-dimensional, but this can be
     controlled via `split_col`, which must be one of the columns
     that "glue" together subrecords into a n-dimensional record 
-    (for example, transaction categories). In this case we consider that
-    the output of the channel (the adversary's extra knowledge) is a
-    pair of values.
+    (for example, categories of transactions). In this case we consider 
+    that the output of the channel (the adversary's extra knowledge) 
+    is a pair of values formed by `agg_col` and `split_col`.
 
     ## Example
 
@@ -316,126 +317,90 @@ def baseline(
     >>> from qif_micro import model
     >>> dataset = pl.DataFrame({
     ...     "uid": [0, 0, 1, 1, 2, 2, 2],
-    ...     "transaction_cost": [1.0, 1.0, 0.0, 2.0, 0.0, 1.0, 1.0]
+    ...     "amount": [1.0, 1.0, 0.0, 2.0, 0.0, 1.0, 1.0],
+    ...     "category": ["a", "a", "a", "a", "b", "b", "a"]
     ... })
     >>> owner_col = "uid"
-    >>> count_col = "count"
-    >>> sum_col = "sum"
-    >>> agg_col = "transaction_cost"
-    >>> prior, ch = model.agg_count_sum.baseline(
+    >>> agg_col = "amount"
+    >>> split_col = "category"
+    >>> prior, ch, map_records, map_hints, = model.agg_count_sum.baseline(
     ...     dataset,
     ...     owner_col,
-    ...     count_col,
-    ...     sum_col,
-    ...     agg_col
+    ...     agg_col,
+    ...     split_col
     ... )
     >>> prior
-    shape: (2, 3)
-    ┌───────────┬───────────┬──────────┐
-    │ count     ┆ sum       ┆ p        │
-    │ ---       ┆ ---       ┆ ---      │
-    │ list[u32] ┆ list[f64] ┆ f64      │
-    ╞═══════════╪═══════════╪══════════╡
-    │ [2]       ┆ [2.0]     ┆ 0.666667 │
-    │ [3]       ┆ [2.0]     ┆ 0.333333 │
-    └───────────┴───────────┴──────────┘
+    shape: (2, 2)
+    ┌───────────┬──────────┐
+    │ record_id ┆ p        │
+    │ ---       ┆ ---      │
+    │ u32       ┆ f64      │
+    ╞═══════════╪══════════╡
+    │ 1         ┆ 0.333333 │
+    │ 2         ┆ 0.666667 │
+    └───────────┴──────────┘
     >>> ch
-    shape: (5, 4)
-    ┌───────────┬───────────┬───────────┬──────────┐
-    │ count     ┆ sum       ┆ hint      ┆ p        │
-    │ ---       ┆ ---       ┆ ---       ┆ ---      │
-    │ list[u32] ┆ list[f64] ┆ struct[1] ┆ f64      │
-    ╞═══════════╪═══════════╪═══════════╪══════════╡
-    │ [2]       ┆ [2.0]     ┆ {0.0}     ┆ 0.25     │
-    │ [2]       ┆ [2.0]     ┆ {1.0}     ┆ 0.5      │
-    │ [2]       ┆ [2.0]     ┆ {2.0}     ┆ 0.25     │
-    │ [3]       ┆ [2.0]     ┆ {0.0}     ┆ 0.333333 │
-    │ [3]       ┆ [2.0]     ┆ {1.0}     ┆ 0.666667 │
-    └───────────┴───────────┴───────────┴──────────┘
+    shape: (6, 3)
+    ┌───────────┬─────────┬──────────┐
+    │ record_id ┆ hint_id ┆ p        │
+    │ ---       ┆ ---     ┆ ---      │
+    │ u32       ┆ u32     ┆ f64      │
+    ╞═══════════╪═════════╪══════════╡
+    │ 1         ┆ 2       ┆ 0.333333 │
+    │ 1         ┆ 3       ┆ 0.333333 │
+    │ 1         ┆ 4       ┆ 0.333333 │
+    │ 2         ┆ 1       ┆ 0.25     │
+    │ 2         ┆ 3       ┆ 0.5      │
+    │ 2         ┆ 5       ┆ 0.25     │
+    └───────────┴─────────┴──────────┘
     """
     hint_cols = [col for col in [agg_col, split_col] if col is not None]
-    dataset = dataset.lazy()
 
-    expected_cols = [owner_col, *hint_cols]
-    diff, ok = _valid_columns(dataset, expected_cols)
-    if not ok: raise ValueError(f"Missing columns {diff}")
-
-    dataset_agg = dataset.group_by(owner_col, split_col).agg(
-        pl.len().alias(count_col),
-
-        _process_expr(pre_process, pl.col(agg_col).sum())
-        .alias(sum_col)
+    expr_agg_col = _process_expr(process_method, agg_col).alias(agg_col)
+    prior, ch, map_records, map_hints = raw_microdata.build(
+        dataset.lazy().with_columns(expr_agg_col),
+        owner_col,
+        hint_cols,
+        []
     )
 
-    # `split_col` must come first, for sorting!
-    input_cols = (
-        [] if split_col is None else [split_col]
-    ) + [count_col, sum_col]
+    agg_record_cols = [split_col, count_col, sum_col]
+    agg_record_cols = [col for col in agg_record_cols if col is not None]
 
-    struct_expr = pl.struct(input_cols)
-    records = (
-        dataset_agg
-        .sort(input_cols)
-        .select(owner_col, struct_expr.alias("record"))
-        .group_by(owner_col, maintain_order=True)
+    group_cols = ["record_id", split_col]
+    group_cols = [col for col in group_cols if col is not None]
+
+    expr_count = pl.len().alias(count_col)
+    expr_sum = pl.col(agg_col).sum().alias(sum_col)
+
+    map_agg_records = (
+        map_records
+        .explode("record")
+        .select(pl.col("record").struct.unnest(), "record_id")
+        .group_by(group_cols)
+        .agg(expr_count, expr_sum)
+        .sort(agg_record_cols)
+        .select("record_id", pl.struct(agg_record_cols).alias("record"))
+        .group_by("record_id")
         .agg("record")
+        .with_columns(pl.col("record").rank("dense").alias("agg_record_id"))
     )
 
-    el_field = lambda field: pl.element().struct.field(field)
-    extract_field = lambda field: (
-        pl.col("record")
-        .list.eval(el_field(field))
-    )
-
-    prior_dist_owners = (
-        records
-        .group_by(owner_col, "record")
-        .agg(pl.len())
-        .with_columns((pl.col("len") / pl.col("len").sum()).alias("p"))
-    )
-
-    record_len = (
-        pl.col("record")
-        .list.eval(el_field(count_col))
-        .list.sum()
-    )
-
-    process_agg = _process_expr(post_process, pl.col(agg_col))
-    ch_dist_owners = (
-        records
-        .join(dataset, on=owner_col, how="inner")
-        .with_columns(process_agg.alias(agg_col))
-        .group_by(owner_col, "record", *hint_cols)
-        .agg(pl.len())
-        .with_columns((pl.col("len") / record_len).alias("p"))
-    )
-
-    prior_owners = ProbabDist.from_polars(
-        prior_dist_owners, 
-        [owner_col, "record"]
-    )
-
-    ch_owners = Channel.from_polars(
-        ch_dist_owners, 
-        [owner_col, "record"],
-        hint_cols
-    )
-
-    joint_owners = qif.push(prior_owners, ch_owners)
+    joint = qif.push(prior, ch)
     joint_dist_agg = (
-        joint_owners.dist
-        .group_by("record", *hint_cols)
-        .agg(pl.col("p").sum().alias("p"))
-        .select(
-            *[extract_field(a).alias(a) for a in input_cols],
-
-            pl.struct(hint_cols)
-            .struct.rename_fields(["hint_value", "hint_split"])
-            .alias("hint"),
-
-            "p"
-        )
+        joint.dist
+        .join(map_agg_records.drop("record").unique(), on="record_id")
+        .group_by("agg_record_id", "hint_id")
+        .agg(pl.col("p").sum())
+        .rename({"agg_record_id": "record_id"})
     )
 
-    joint_agg = Joint.from_polars(joint_dist_agg, input_cols, ["hint"])
-    return qif.push_back(joint_agg)
+    joint_agg = Joint.from_polars(joint_dist_agg, joint.input, joint.output)
+    prior_agg, ch_agg = qif.push_back(joint_agg)
+
+    map_agg_records = map_agg_records.select(
+        pl.col("agg_record_id").alias("record_id"),
+        "record"
+    ).unique()
+
+    return prior_agg, ch_agg, map_agg_records, map_hints

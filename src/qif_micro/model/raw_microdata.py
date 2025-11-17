@@ -60,16 +60,14 @@ def build(
     └───────────┴─────────┴──────────┘
     """
     record_cols = [*hint_cols, *other_cols]
-    dataset = _prepare_dataset(dataset.lazy(), owner_col, record_cols)
 
-    _, ok = _valid_columns(dataset, [owner_col, "record"])
-    assert ok
+    dataset = dataset.lazy()
+    dataset = _prepare_dataset(dataset, owner_col, record_cols)
 
-    if not _single_record_per_owner(dataset, owner_col):
-        raise ValueError("User owns more than one record!")
-
-    expr_record_id = pl.col("record").rank("dense").alias("record_id")
-    dataset = dataset.select("record", expr_record_id)
+    dataset = dataset.select(
+        "record", 
+        pl.col("record").rank("dense").alias("record_id")
+    )
 
     expr_p = (pl.col("len") / pl.col("len").sum()).alias("p")
     prior_dist = (
