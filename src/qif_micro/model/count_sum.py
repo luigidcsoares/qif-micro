@@ -1,7 +1,6 @@
 from enum import Enum, auto
 
 import polars as pl
-import polars.selectors as cs
 
 from scipy.special import gammaln
 
@@ -163,17 +162,17 @@ def build(
     │ 2         ┆ 0.333333 ┆ 2       │
     │ 2         ┆ 0.166667 ┆ 3       │
     └───────────┴──────────┴─────────┘
-    >>> map_records.collect()
+    >>> map_records.sort(["record_id", "record"]).collect()
     shape: (2, 2)
     ┌───────────┬─────────────────┐
     │ record_id ┆ record          │
     │ ---       ┆ ---             │
     │ u32       ┆ list[struct[2]] │
     ╞═══════════╪═════════════════╡
-    │ 2         ┆ [{3,2}]         │
     │ 1         ┆ [{2,2}]         │
+    │ 2         ┆ [{3,2}]         │
     └───────────┴─────────────────┘
-    >>> map_hints.collect()
+    >>> map_hints.sort(["hint_id", "hint"]).collect()
     shape: (3, 2)
     ┌─────────┬───────────┐
     │ hint_id ┆ hint      │
@@ -257,7 +256,6 @@ def build(
         .alias("record_len")
     )
 
-
     map_records = dataset.select("record_id", "record").unique()
     record_lens = map_records.select("record_id", expr_record_len)
 
@@ -277,45 +275,6 @@ def build(
     ch = Channel.from_polars(ch_dist, ["record_id"], ["hint_id"])
 
     return prior, ch, map_records, map_hints
-
-    # `split_col` is both input, as part of the record, and output,
-    # as part of the hint. So, we first deal with the hint side,
-    # and then extract the values from the record col
-    input_cols = [col for col in ext_input_cols if col != "tmp"]
-    output_cols = [col for col in ["hint", split_col] if col != "tmp"]
-
-    ch_dist = pl.concat(
-        _build_ch(prepare_dataset(v), count_col, sum_col)
-        for v in split_vals.collect().to_series()
-    ).with_columns(
-        pl.col("record")
-        .list.eval(el_field(count_col))
-        .list.sum()
-        .alias("total_count"),
-
-        (pl.col("p") * pl.col(count_col)).alias("p_scaled")
-    ).select(
-        *[extract_field(col).alias(col) for col in input_cols],
-
-        pl.struct(output_cols)
-        .struct.rename_fields(["hint_value", "hint_split"])
-        .alias("hint"),
-
-        (pl.col("p_scaled") / pl.col("total_count")).alias("p")
-    )
-
-    ch_dist = _fill_invalid(ch_dist, valid_hints is not None)
-
-    prior_freq = records.group_by("record").agg(pl.len())
-    prior_dist = prior_freq.select(
-        *[extract_field(col).alias(col) for col in input_cols],
-        (pl.col("len") / pl.col("len").sum()).alias("p")
-    )
-
-    prior = ProbabDist.from_polars(prior_dist, input_cols)
-    ch = Channel.from_polars(ch_dist, input_cols, ["hint"])
-
-    return prior, ch
 
 
 def baseline(
@@ -396,6 +355,29 @@ def baseline(
     │ 2         ┆ 3       ┆ 0.5      │
     │ 2         ┆ 5       ┆ 0.25     │
     └───────────┴─────────┴──────────┘
+    >>> map_records.sort(["record_id", "record"]).collect()
+    shape: (2, 2)
+    ┌───────────┬────────────────────────┐
+    │ record_id ┆ record                 │
+    │ ---       ┆ ---                    │
+    │ u32       ┆ list[struct[3]]        │
+    ╞═══════════╪════════════════════════╡
+    │ 1         ┆ [{"a",1,1}, {"b",2,1}] │
+    │ 2         ┆ [{"a",2,2}]            │
+    └───────────┴────────────────────────┘
+    >>> map_hints.sort(["hint_id", "hint"]).collect()
+    shape: (5, 2)
+    ┌─────────┬───────────┐
+    │ hint_id ┆ hint      │
+    │ ---     ┆ ---       │
+    │ u32     ┆ struct[2] │
+    ╞═════════╪═══════════╡
+    │ 1       ┆ {0,"a"}   │
+    │ 2       ┆ {0,"b"}   │
+    │ 3       ┆ {1,"a"}   │
+    │ 4       ┆ {1,"b"}   │
+    │ 5       ┆ {2,"a"}   │
+    └─────────┴───────────┘
     """
     hint_cols = [col for col in [agg_col, split_col] if col is not None]
 
@@ -438,8 +420,9 @@ def baseline(
         .rename({"agg_record_id": "record_id"})
     )
 
-    joint_agg = Joint.from_polars(joint_dist_agg, joint.input, joint.output)
-    prior_agg, ch_agg = qif.push_back(joint_agg)
+    prior_agg, ch_agg = qif.push_back(
+        Joint.from_polars(joint_dist_agg, joint.input, joint.output)
+    )
 
     map_agg_records = map_agg_records.select(
         pl.col("agg_record_id").alias("record_id"),

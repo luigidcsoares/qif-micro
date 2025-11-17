@@ -2,12 +2,11 @@ from collections.abc import Iterable
 
 import polars as pl
 
-from qif_micro import qif
 from qif_micro._internal.dataset import (
     _extract_from_record,
     _prepare_dataset,
 )
-from qif_micro.datatypes import Channel, Joint, ProbabDist
+from qif_micro.datatypes import Channel, ProbabDist
 
 def build(
     dataset: pl.DataFrame | pl.LazyFrame,
@@ -56,13 +55,35 @@ def build(
     │ 2         ┆ 3       ┆ 0.5      │
     │ 3         ┆ 2       ┆ 1.0      │
     └───────────┴─────────┴──────────┘
+    >>> map_records.sort(["record_id", "record"]).collect()
+    shape: (3, 2)
+    ┌───────────┬───────────────────────┐
+    │ record_id ┆ record                │
+    │ ---       ┆ ---                   │
+    │ u32       ┆ list[struct[1]]       │
+    ╞═══════════╪═══════════════════════╡
+    │ 1         ┆ [{0.0}, {1.0}, {1.0}] │
+    │ 2         ┆ [{0.0}, {2.0}]        │
+    │ 3         ┆ [{1.0}, {1.0}]        │
+    └───────────┴───────────────────────┘
+    >>> map_hints.sort(["hint_id", "hint"]).collect()
+    shape: (3, 2)
+    ┌─────────┬───────────┐
+    │ hint_id ┆ hint      │
+    │ ---     ┆ ---       │
+    │ u32     ┆ struct[1] │
+    ╞═════════╪═══════════╡
+    │ 1       ┆ {0.0}     │
+    │ 2       ┆ {1.0}     │
+    │ 3       ┆ {2.0}     │
+    └─────────┴───────────┘
     """
     record_cols = [*hint_cols, *other_cols]
 
     expr_rec_id = pl.col("record").rank("dense").alias("record_id")
     dataset = (
         _prepare_dataset(dataset.lazy(), owner_col, record_cols)
-        .select("record", expr_rec_id)
+        .select(expr_rec_id, "record")
     )
 
     expr_p = (pl.col("len") / pl.col("len").sum()).alias("p")
@@ -98,6 +119,6 @@ def build(
     ch = Channel.from_polars(ch_dist, ["record_id"], ["hint_id"])
 
     map_records = dataset.unique()
-    map_hints = dataset_with_meta.select("hint", "hint_id").unique()
+    map_hints = dataset_with_meta.select("hint_id", "hint").unique()
 
     return prior, ch, map_records, map_hints
