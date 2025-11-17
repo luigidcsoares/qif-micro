@@ -9,9 +9,11 @@ def _extract_from_record(
     _, ok = _valid_columns(dataset, ["record"])
     assert ok
 
-    expr_field = lambda col: pl.element().struct.field(col)
     extract_list = [
-        pl.col("record").list.eval(expr_field(col)).alias(col)
+        pl.col("record")
+        .list.eval(pl.element().struct.field(col))
+        .alias(pl.escape_regex(col))
+
         for col in cols
     ]
 

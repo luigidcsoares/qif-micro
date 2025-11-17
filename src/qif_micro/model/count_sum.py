@@ -1,13 +1,14 @@
 from enum import Enum, auto
 
 import polars as pl
+import polars.selectors as cs
+
 from scipy.special import gammaln
 
 from qif_micro import qif
 from qif_micro._internal.dataset import (
     _extract_from_record,
     _prepare_dataset,
-    _single_record_per_owner,
     _valid_columns
 )
 from qif_micro.datatypes import Channel, Joint, ProbabDist
@@ -31,10 +32,11 @@ def _build_ch(
     dataset_with_hints: pl.LazyFrame,
     count_col: str,
     sum_col: str,
+    agg_col: str
 ) -> pl.LazyFrame:
     n = pl.col(sum_col)
     k = pl.col(count_col)
-    h = pl.col("hint")
+    h = pl.col(agg_col)
 
     log_p = (
         (k - 1).log() - (n + 1).log() 
@@ -45,9 +47,9 @@ def _build_ch(
     ch_dist = dataset_with_hints.with_columns(
         pl
         .when(pl.col(count_col) == 1)
-        .then((pl.col(sum_col) == pl.col("hint")).cast(float))
+        .then((pl.col(sum_col) == pl.col(agg_col)).cast(float))
         .otherwise(log_p.exp())
-        .over(count_col, sum_col, "hint")
+        .over(count_col, sum_col, agg_col)
         .alias("p")
     )
 
@@ -83,12 +85,13 @@ def _fill_invalid(
 def build(
     dataset: pl.DataFrame | pl.LazyFrame,
     owner_col: str,
-    count_col: str,
-    sum_col: str,
+    agg_col: str,
     split_col: str | None = None,
-    valid_hints: pl.DataFrame | pl.LazyFrame | None = None,
-    pre_process: ProcessMethod = ProcessMethod.CEIL
-) -> tuple[ProbabDist, Channel]:
+    count_col: str = "count",
+    sum_col: str = "sum",
+    hints: pl.DataFrame | pl.LazyFrame | None = None,
+    process_method: ProcessMethod = ProcessMethod.CEIL
+) -> tuple[ProbabDist, Channel, pl.LazyFrame, pl.LazyFrame]:
     """
     The input to this function is a dataset that is result of
     aggregating some original data by count and sum.
@@ -115,11 +118,10 @@ def build(
     the output of the channel (the adversary's extra knowledge) is a
     pair of values.
 
-    If the real data is known, this function accepts the valid hints 
-    in the form of a dataframe mapping `owner_col` to each hint value
-    (including `split_col`, if defined). In this case we create a Null
-    hint that represents all invalid hint values. This is equivalent 
-    to a post-processing that maps a subset of hints to Null.
+    If the real data is known, this function accepts the valid `hints`
+    in the form of a dataframe listing (pairs of) hint values.
+    (columns `agg_col` and `split_col`, if defined). In this case 
+    we create a Null hint that represents all invalid hint values.
 
     ## Example
 
@@ -131,109 +133,150 @@ def build(
     ...     "sum": [2, 2, 2]
     ... })
     >>> owner_col = "uid"
-    >>> count_col = "count"
-    >>> sum_col = "sum"
-    >>> prior, ch = model.count_sum.build(
+    >>> agg_col = "agg_value"
+    >>> prior, ch, map_records, map_hints = model.count_sum.build(
     ...     dataset,
     ...     owner_col,
-    ...     count_col,
-    ...     sum_col
+    ...     agg_col
     ... )
     >>> prior
-    shape: (2, 3)
-    ┌───────────┬───────────┬──────────┐
-    │ count     ┆ sum       ┆ p        │
-    │ ---       ┆ ---       ┆ ---      │
-    │ list[i64] ┆ list[i64] ┆ f64      │
-    ╞═══════════╪═══════════╪══════════╡
-    │ [2]       ┆ [2]       ┆ 0.666667 │
-    │ [3]       ┆ [2]       ┆ 0.333333 │
-    └───────────┴───────────┴──────────┘
+    shape: (2, 2)
+    ┌───────────┬──────────┐
+    │ record_id ┆ p        │
+    │ ---       ┆ ---      │
+    │ u32       ┆ f64      │
+    ╞═══════════╪══════════╡
+    │ 1         ┆ 0.666667 │
+    │ 2         ┆ 0.333333 │
+    └───────────┴──────────┘
     >>> ch
-    shape: (6, 4)
-    ┌───────────┬───────────┬───────────┬──────────┐
-    │ count     ┆ sum       ┆ hint      ┆ p        │
-    │ ---       ┆ ---       ┆ ---       ┆ ---      │
-    │ list[i64] ┆ list[i64] ┆ struct[1] ┆ f64      │
-    ╞═══════════╪═══════════╪═══════════╪══════════╡
-    │ [2]       ┆ [2]       ┆ {0.0}     ┆ 0.333333 │
-    │ [2]       ┆ [2]       ┆ {1.0}     ┆ 0.333333 │
-    │ [2]       ┆ [2]       ┆ {2.0}     ┆ 0.333333 │
-    │ [3]       ┆ [2]       ┆ {0.0}     ┆ 0.5      │
-    │ [3]       ┆ [2]       ┆ {1.0}     ┆ 0.333333 │
-    │ [3]       ┆ [2]       ┆ {2.0}     ┆ 0.166667 │
-    └───────────┴───────────┴───────────┴──────────┘
+    shape: (6, 3)
+    ┌───────────┬──────────┬─────────┐
+    │ record_id ┆ p        ┆ hint_id │
+    │ ---       ┆ ---      ┆ ---     │
+    │ u32       ┆ f64      ┆ u32     │
+    ╞═══════════╪══════════╪═════════╡
+    │ 1         ┆ 0.333333 ┆ 1       │
+    │ 1         ┆ 0.333333 ┆ 2       │
+    │ 1         ┆ 0.333333 ┆ 3       │
+    │ 2         ┆ 0.5      ┆ 1       │
+    │ 2         ┆ 0.333333 ┆ 2       │
+    │ 2         ┆ 0.166667 ┆ 3       │
+    └───────────┴──────────┴─────────┘
+    >>> map_records.collect()
+    shape: (2, 2)
+    ┌───────────┬─────────────────┐
+    │ record_id ┆ record          │
+    │ ---       ┆ ---             │
+    │ u32       ┆ list[struct[2]] │
+    ╞═══════════╪═════════════════╡
+    │ 2         ┆ [{3,2}]         │
+    │ 1         ┆ [{2,2}]         │
+    └───────────┴─────────────────┘
+    >>> map_hints.collect()
+    shape: (3, 2)
+    ┌─────────┬───────────┐
+    │ hint_id ┆ hint      │
+    │ ---     ┆ ---       │
+    │ u32     ┆ struct[1] │
+    ╞═════════╪═══════════╡
+    │ 1       ┆ {0}       │
+    │ 2       ┆ {1}       │
+    │ 3       ┆ {2}       │
+    └─────────┴───────────┘
     """
-    # If there's no column to split, we create a temporary one,
-    # just so we can reuse the same logic...
-    split_col = "tmp" if split_col is None else split_col
+    dataset = dataset.lazy()
 
-    # `split_col` must come first, for sorting!
-    ext_input_cols = [split_col, count_col, sum_col]
+    hint_cols = [agg_col, split_col]
+    hint_cols = [col for col in hint_cols if col is not None]
 
-    dataset = dataset.lazy().with_columns(
-        pl.coalesce(f"^{split_col}$", pl.lit(""))
-        .alias(split_col)
+    has_hints = hints is not None
+    if has_hints:
+        diff, ok = _valid_columns(dataset, hint_cols)
+        if not ok: raise ValueError(f"Missing columns {diff} in hints")
+
+    record_cols = [split_col, count_col, sum_col]
+    record_cols = [col for col in record_cols if col is not None]
+    expr_sum_col = _process_expr(process_method, sum_col).alias(sum_col)
+    expr_rec_id = pl.col("record").rank("dense").alias("record_id")
+
+    dataset = (
+        dataset.with_columns(expr_sum_col)
+        .pipe(_prepare_dataset, owner_col, record_cols)
+        .select(owner_col, "record", expr_rec_id)
     )
 
-    expected_cols = [owner_col, *ext_input_cols]
-    diff, ok = _valid_columns(dataset, expected_cols)
-    if not ok: raise ValueError(f"Missing columns {diff}")
-
-    dataset = dataset.with_columns(
-        _process_expr(pre_process, pl.col(sum_col))
-        .alias(sum_col)
-    )
-
-    hints = valid_hints.lazy() if valid_hints is not None else (
+    expr_p = (pl.col("len") / pl.col("len").sum()).alias("p")
+    prior_dist = (
         dataset
-        .unique(ext_input_cols)
-        .with_columns(pl.int_ranges(0, pl.col(sum_col)+1).alias("hint"))
-        .explode("hint")
-        .with_columns(pl.col("hint").cast(float))
+        .group_by("record_id")
+        .agg(pl.len())
+        .select("record_id", expr_p)
     )
 
-    # TODO: allow another name for the hint column?
-    expected_cols = [owner_col, split_col, "hint"]
-    expected_cols = [col for col in expected_cols if col != "tmp"]
-    diff, ok = _valid_columns(hints, expected_cols)
-    if not ok: raise ValueError(f"Missing columns {diff} in hints")
+    prior = ProbabDist.from_polars(prior_dist, ["record_id"])
 
-    # Iterate over each of the possible values for `split_col`,
-    # construct individual channels, and then combine them, weighting by
-    # the proportion of individual values for each `split_col` val.
-    records = (
-        dataset
-        .sort(ext_input_cols)
-        .select(owner_col, pl.struct(ext_input_cols).alias("record"))
-        .group_by(owner_col, maintain_order=True)
-        .agg("record")
+    wide_dataset = (
+        _extract_from_record(dataset, record_cols)
+        .select("record_id", *record_cols)
+        .explode(record_cols)
     )
 
-    el_field = lambda field: pl.element().struct.field(field)
-    subrecord_filter = lambda val: el_field(split_col) == val
-    extract_field_at = lambda field, at: (
+    join_predicates = [pl.col(sum_col) >= pl.col(agg_col)] + (
+        [pl.col(split_col) == pl.col(f"{split_col}_right")] 
+        if split_col is not None else []
+    )
+
+    expr_agg_col = pl.int_ranges(0, pl.col(sum_col) + 1).alias(agg_col)
+    dataset_with_hints = (
+        wide_dataset.join_where(hints.lazy(), join_predicates)
+    ) if has_hints else (
+        wide_dataset.unique().with_columns(expr_agg_col).explode(agg_col)
+    )
+
+    expr_coalesce_split = pl.coalesce(f"^{split_col}$", pl.lit(0))
+    split_vals = (
+        dataset_with_hints.select(expr_coalesce_split)
+        .unique().collect().to_series()
+    )
+
+    ch_dist_unnorm = pl.concat(
+        dataset_with_hints.filter(expr_coalesce_split == v)
+        .pipe(_build_ch, count_col, sum_col, agg_col)
+
+        for v in split_vals
+    )
+
+    group_cols = ["record_id", split_col]
+    group_cols = [col for col in group_cols if col is not None]
+
+    expr_record_len = (
         pl.col("record")
-        .list.filter(subrecord_filter(at))
+        .list.eval(pl.element().struct.field(count_col).sum())
         .list.first()
-        .struct.field(field)
+        .alias("record_len")
     )
 
-    dataset_with_hints = records.join(hints, on=owner_col)
-    prepare_dataset = lambda v: (
-        dataset_with_hints
-        .filter(pl.col(split_col) == v)
-        .with_columns(
-            extract_field_at(count_col, v).alias(count_col),
-            extract_field_at(sum_col, v).alias(sum_col),
-        )
+
+    map_records = dataset.select("record_id", "record").unique()
+    record_lens = map_records.select("record_id", expr_record_len)
+
+    expr_hint = pl.struct(hint_cols).alias("hint")
+    expr_weight = pl.col(count_col) / pl.col("record_len")
+    expr_p = (pl.col("p") * expr_weight).alias("p")
+
+    ch_dist = (
+        ch_dist_unnorm
+        .join(record_lens, on="record_id")
+        .select("record_id", expr_hint, expr_p)
+        .with_columns(pl.col("hint").rank("dense").alias("hint_id"))
     )
 
-    split_vals = dataset.select(pl.col(split_col).unique())
-    extract_field = lambda field: (
-        pl.col("record")
-        .list.eval(el_field(field))
-    )
+    map_hints = ch_dist.select("hint_id", "hint").unique()
+    ch_dist = ch_dist.select(pl.exclude("hint"))
+    ch = Channel.from_polars(ch_dist, ["record_id"], ["hint_id"])
+
+    return prior, ch, map_records, map_hints
 
     # `split_col` is both input, as part of the record, and output,
     # as part of the hint. So, we first deal with the hint side,
@@ -358,14 +401,14 @@ def baseline(
 
     expr_agg_col = _process_expr(process_method, agg_col).alias(agg_col)
     prior, ch, map_records, map_hints = raw_microdata.build(
-        dataset.lazy().with_columns(expr_agg_col),
+        dataset.lazy().with_columns(expr_agg_col.cast(int)),
         owner_col,
         hint_cols,
         []
     )
 
-    agg_record_cols = [split_col, count_col, sum_col]
-    agg_record_cols = [col for col in agg_record_cols if col is not None]
+    agg_cols = [split_col, count_col, sum_col]
+    agg_cols = [col for col in agg_cols if col is not None]
 
     group_cols = ["record_id", split_col]
     group_cols = [col for col in group_cols if col is not None]
@@ -379,8 +422,8 @@ def baseline(
         .select(pl.col("record").struct.unnest(), "record_id")
         .group_by(group_cols)
         .agg(expr_count, expr_sum)
-        .sort(agg_record_cols)
-        .select("record_id", pl.struct(agg_record_cols).alias("record"))
+        .sort(agg_cols)
+        .select("record_id", pl.struct(agg_cols).alias("record"))
         .group_by("record_id")
         .agg("record")
         .with_columns(pl.col("record").rank("dense").alias("agg_record_id"))

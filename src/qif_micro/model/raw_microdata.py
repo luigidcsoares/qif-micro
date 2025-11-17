@@ -6,8 +6,6 @@ from qif_micro import qif
 from qif_micro._internal.dataset import (
     _extract_from_record,
     _prepare_dataset,
-    _single_record_per_owner,
-    _valid_columns
 )
 from qif_micro.datatypes import Channel, Joint, ProbabDist
 
@@ -61,12 +59,10 @@ def build(
     """
     record_cols = [*hint_cols, *other_cols]
 
-    dataset = dataset.lazy()
-    dataset = _prepare_dataset(dataset, owner_col, record_cols)
-
-    dataset = dataset.select(
-        "record", 
-        pl.col("record").rank("dense").alias("record_id")
+    expr_rec_id = pl.col("record").rank("dense").alias("record_id")
+    dataset = (
+        _prepare_dataset(dataset.lazy(), owner_col, record_cols)
+        .select("record", expr_rec_id)
     )
 
     expr_p = (pl.col("len") / pl.col("len").sum()).alias("p")
@@ -84,9 +80,7 @@ def build(
     expr_record_len = pl.col("record").list.len().alias("record_len")
     
     dataset_with_meta = ( 
-        dataset
-        .unique()
-        .pipe(_extract_from_record, hint_cols)
+        dataset.unique().pipe(_extract_from_record, hint_cols)
         .select(pl.exclude("record"), expr_record_len)
         .explode(hint_cols)
         .select("record_id", "record_len", expr_hint)
