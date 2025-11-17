@@ -64,17 +64,17 @@ def _fill_invalid(
     # hints as per the baseline. In this case we add a special hint to
     # keep the channel valid. This is equivalent to a post-processing
     # that merges all invalid hints.
-    schema = ch_dist.collect_schema()
-    assert "p" in schema.keys()
-    assert "hint" in schema.keys()
+    _, ok = _valid_columns(ch_dist, ["p", "hint"])
+    assert ok
 
-    remaining_p = 1 - pl.col("p").sum()
-    null_hint = pl.lit(None, schema["hint"])
+    schema = ch_dist.collect_schema()
+    expr_remaining_p = (1 - pl.col("p").sum()).alias("p")
+    expr_null_hint = pl.lit(None, schema["hint"]).alias("hint")
 
     ch_dist_invalid = (
         ch_dist
         .group_by(pl.exclude("p", "hint"))
-        .agg(null_hint.alias("hint"), remaining_p.alias("p"))
+        .agg(expr_null_hint, expr_remaining_p)
         .select(schema.keys())
     )
 
@@ -88,7 +88,7 @@ def build(
     split_col: str | None = None,
     count_col: str = "count",
     sum_col: str = "sum",
-    hints: pl.DataFrame | pl.LazyFrame | None = None,
+    map_hints: pl.DataFrame | pl.LazyFrame | None = None,
     process_method: ProcessMethod = ProcessMethod.CEIL
 ) -> tuple[ProbabDist, Channel, pl.LazyFrame, pl.LazyFrame]:
     """
@@ -117,9 +117,9 @@ def build(
     the output of the channel (the adversary's extra knowledge) is a
     pair of values.
 
-    If the real data is known, this function accepts the valid `hints`
-    in the form of a dataframe listing (pairs of) hint values.
-    (columns `agg_col` and `split_col`, if defined). In this case 
+    If the real data is known, this function accepts the valid hints
+    in the form of a dataframe listing (pairs of) hint values
+    (same format as the `map_hints` returned from models). In this case
     we create a Null hint that represents all invalid hint values.
 
     ## Example
@@ -150,18 +150,18 @@ def build(
     └───────────┴──────────┘
     >>> ch
     shape: (6, 3)
-    ┌───────────┬──────────┬─────────┐
-    │ record_id ┆ p        ┆ hint_id │
-    │ ---       ┆ ---      ┆ ---     │
-    │ u32       ┆ f64      ┆ u32     │
-    ╞═══════════╪══════════╪═════════╡
-    │ 1         ┆ 0.333333 ┆ 1       │
-    │ 1         ┆ 0.333333 ┆ 2       │
-    │ 1         ┆ 0.333333 ┆ 3       │
-    │ 2         ┆ 0.5      ┆ 1       │
-    │ 2         ┆ 0.333333 ┆ 2       │
-    │ 2         ┆ 0.166667 ┆ 3       │
-    └───────────┴──────────┴─────────┘
+    ┌───────────┬─────────┬──────────┐
+    │ record_id ┆ hint_id ┆ p        │
+    │ ---       ┆ ---     ┆ ---      │
+    │ u32       ┆ i64     ┆ f64      │
+    ╞═══════════╪═════════╪══════════╡
+    │ 1         ┆ 1       ┆ 0.333333 │
+    │ 1         ┆ 2       ┆ 0.333333 │
+    │ 1         ┆ 3       ┆ 0.333333 │
+    │ 2         ┆ 1       ┆ 0.5      │
+    │ 2         ┆ 2       ┆ 0.333333 │
+    │ 2         ┆ 3       ┆ 0.166667 │
+    └───────────┴─────────┴──────────┘
     >>> map_records.sort(["record_id", "record"]).collect()
     shape: (2, 2)
     ┌───────────┬─────────────────┐
@@ -177,7 +177,7 @@ def build(
     ┌─────────┬───────────┐
     │ hint_id ┆ hint      │
     │ ---     ┆ ---       │
-    │ u32     ┆ struct[1] │
+    │ i64     ┆ struct[1] │
     ╞═════════╪═══════════╡
     │ 1       ┆ {0}       │
     │ 2       ┆ {1}       │
@@ -189,9 +189,10 @@ def build(
     hint_cols = [agg_col, split_col]
     hint_cols = [col for col in hint_cols if col is not None]
 
-    has_hints = hints is not None
+    has_hints = map_hints is not None
     if has_hints:
-        diff, ok = _valid_columns(hints.lazy(), hint_cols)
+        expected_cols = ["hint_id", "hint"]
+        diff, ok = _valid_columns(map_hints.lazy(), expected_cols)
         if not ok: raise ValueError(f"Missing columns {diff} in hints")
 
     record_cols = [split_col, count_col, sum_col]
@@ -218,19 +219,28 @@ def build(
     wide_dataset = (
         _extract_from_record(dataset, record_cols)
         .select("record_id", *record_cols)
+        .unique()
         .explode(record_cols)
     )
 
-    join_predicates = [pl.col(sum_col) >= pl.col(agg_col)] + (
-        [pl.col(split_col) == pl.col(f"{split_col}_right")] 
-        if split_col is not None else []
+    expr_agg_col = pl.int_ranges(0, pl.col(sum_col) + 1).alias(agg_col)
+    map_hints = map_hints.lazy().unique() if has_hints else (
+        wide_dataset
+        .with_columns(expr_agg_col)
+        .select(hint_cols).unique().explode(hint_cols)
+        .select(pl.struct(hint_cols).alias("hint"))
+        .select(pl.col("hint").rank("dense").alias("hint_id"), "hint")
     )
 
-    expr_agg_col = pl.int_ranges(0, pl.col(sum_col) + 1).alias(agg_col)
-    dataset_with_hints = (
-        wide_dataset.join_where(hints.lazy(), join_predicates)
-    ) if has_hints else (
-        wide_dataset.unique().with_columns(expr_agg_col).explode(agg_col)
+    predicate_agg = pl.col(sum_col) >= pl.col(agg_col)
+    predicate_split = pl.lit(True) if split_col is None else (
+        pl.col(split_col) == pl.col(f"{split_col}_right")
+    )
+
+    unnested_hints = map_hints.select(pl.col("hint").struct.unnest())
+    dataset_with_hints = wide_dataset.join_where(
+        unnested_hints,
+        [predicate_agg, predicate_split]
     )
 
     expr_coalesce_split = pl.coalesce(f"^{split_col}$", pl.lit(0))
@@ -245,9 +255,6 @@ def build(
 
         for v in split_vals
     )
-
-    group_cols = ["record_id", split_col]
-    group_cols = [col for col in group_cols if col is not None]
 
     expr_record_len = (
         pl.col("record")
@@ -267,13 +274,14 @@ def build(
         ch_dist_unnorm
         .join(record_lens, on="record_id")
         .select("record_id", expr_hint, expr_p)
-        .with_columns(pl.col("hint").rank("dense").alias("hint_id"))
+        .pipe(_fill_invalid, has_hints)
+        .join(map_hints, on="hint", how="left")
+        .with_columns(pl.col("hint_id").fill_null(-1))
     )
 
     map_hints = ch_dist.select("hint_id", "hint").unique()
-    ch_dist = ch_dist.select(pl.exclude("hint"))
+    ch_dist = ch_dist.select("record_id", "hint_id", "p")
     ch = Channel.from_polars(ch_dist, ["record_id"], ["hint_id"])
-
     return prior, ch, map_records, map_hints
 
 
