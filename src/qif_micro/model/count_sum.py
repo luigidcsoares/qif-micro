@@ -153,7 +153,7 @@ def build(
     ┌───────────┬─────────┬──────────┐
     │ record_id ┆ hint_id ┆ p        │
     │ ---       ┆ ---     ┆ ---      │
-    │ u32       ┆ i64     ┆ f64      │
+    │ u32       ┆ u32     ┆ f64      │
     ╞═══════════╪═════════╪══════════╡
     │ 1         ┆ 1       ┆ 0.333333 │
     │ 1         ┆ 2       ┆ 0.333333 │
@@ -177,7 +177,7 @@ def build(
     ┌─────────┬───────────┐
     │ hint_id ┆ hint      │
     │ ---     ┆ ---       │
-    │ i64     ┆ struct[1] │
+    │ u32     ┆ struct[1] │
     ╞═════════╪═══════════╡
     │ 1       ┆ {0}       │
     │ 2       ┆ {1}       │
@@ -276,7 +276,7 @@ def build(
         .select("record_id", expr_hint, expr_p)
         .pipe(_fill_invalid, has_hints)
         .join(map_hints, on="hint", how="left")
-        .with_columns(pl.col("hint_id").fill_null(-1))
+        # .with_columns(pl.col("hint_id").fill_null(-1))
     )
 
     map_hints = ch_dist.select("hint_id", "hint").unique()
