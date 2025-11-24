@@ -38,7 +38,7 @@ def _strategies(joint: Joint) -> Channel:
     return Channel.from_polars(st_dist, joint.output, joint.input)
 
 
-def posterior(prior: ProbabDist, ch: Channel, baseline: Joint) -> float:
+def posterior(model: Joint, baseline: Joint) -> float:
     """
     Computes the adversary's expected chance of correctly guessing the
     secret, by constructing the adversary's strategy conditioned on each
@@ -76,10 +76,10 @@ def posterior(prior: ProbabDist, ch: Channel, baseline: Joint) -> float:
     >>> ch = Channel.from_polars(ch_dist, ["X"], ["Y"])
 
     In this scenario the expected Bayes vuln wrt the baseline is
-    >>> qif.posterior(prior, ch, baseline)
+    >>> qif.posterior(qif.push(prior, ch), baseline)
     0.6666666666666666
     """
-    strategies = _strategies(push(prior, ch))
+    strategies = _strategies(model)
 
     # Joint "input" matches with strategy "output" and vice-versa.
     # That is, strategy takes one of the output as input 
