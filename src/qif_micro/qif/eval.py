@@ -1,7 +1,6 @@
 import polars as pl
 
-from .probability import push
-from qif_micro.datatypes import Channel, Joint, ProbabDist
+from qif_micro.datatypes import Channel, Joint 
 
 def _strategies(joint: Joint) -> Channel:
     """
@@ -12,29 +11,16 @@ def _strategies(joint: Joint) -> Channel:
     Since we are assuming Bayes in general, this channel actually
     has the same dimensions than the joint.
     """
-    joint_cols = joint.dist.group_by(joint.output)
-    max_output = joint_cols.agg(pl.col("p").max().alias("max"))
+    expr_max = pl.col("p").max().over(joint.output).alias("max")
+    joint_with_max = joint.dist.with_columns(expr_max)
 
-    cols_with_max = joint.dist.join(max_output, on=joint.output)
-    cols_masked = cols_with_max.with_columns(
-        pl.col("p")
-        .is_close(pl.col("max"))
-        .cast(pl.Float64)
-        .alias("p")
-    )
+    expr_mask = (pl.col("p") == pl.col("max")).cast(pl.Float64).alias("p")
+    joint_masked = joint_with_max.with_columns(expr_mask)
 
-    count_max = (
-        cols_masked
-        .group_by(joint.output)
-        .agg(pl.col("p").sum().alias("cmax"))
-    )
-
-    st_dist = cols_masked.join(count_max, on=joint.output).select(
-        *joint.input,
-        *joint.output,
-        (pl.col("p") / pl.col("cmax")).alias("p")
-    )
-
+    expr_cmax = pl.col("p").sum().over(joint.output)
+    expr_uniform_p = (pl.col("p") / expr_cmax).alias("p")
+    
+    st_dist = joint_masked.with_columns(*joint.input, *joint.output, expr_uniform_p)
     return Channel.from_polars(st_dist, joint.output, joint.input)
 
 
@@ -91,8 +77,6 @@ def posterior(model: Joint, baseline: Joint) -> float:
         baseline.dist
         .join(strategies.dist, left_on=lcols, right_on=rcols)
         .with_columns((pl.col("p") * pl.col("p_right")).alias("p"))
-        .group_by(baseline.output)
-        .agg(pl.col("p").sum().alias("p"))
         .select(pl.col("p").sum().alias("p"))
         .collect()
         .item()
