@@ -164,7 +164,7 @@ def build(
         .with_columns(expr_agg_col)
         .select(hint_cols)
         .unique()
-        .explode(hint_cols)
+        .explode(agg_col)
     )
 
     predicate_agg = pl.col(sum_col) >= pl.col(agg_col)
