@@ -71,7 +71,7 @@ def build(
     expr_record_len = pl.col("record").list.len().alias("record_len")
     
     records_with_hints = ( 
-        dataset.unique().pipe(_extract_from_record, hint_cols)
+        dataset.drop("uid").unique().pipe(_extract_from_record, hint_cols)
         .with_columns(expr_record_len)
         .explode(hint_cols)
         .select("record", "record_len", expr_hint)
