@@ -55,6 +55,26 @@ def _build_ch(
     return ch_dist.filter(pl.col("p") > 0)
 
 
+
+def _fill_invalid(ch_dist: pl.LazyFrame) -> pl.LazyFrame:
+    _, ok = _valid_columns(ch_dist, ["p", "hint"])
+    assert ok
+
+    schema = ch_dist.collect_schema()
+    expr_remaining_p = (1 - pl.col("p").sum()).alias("p")
+    expr_null_hint = pl.lit(None, schema["hint"]).alias("hint")
+
+    ch_dist_invalid = (
+        ch_dist
+        .group_by(pl.exclude("p", "hint"))
+        .agg(expr_null_hint, expr_remaining_p)
+        .select(schema.keys())
+    )
+
+    ch_dist = pl.concat([ch_dist, ch_dist_invalid])
+    return ch_dist.filter(pl.col("p") > 0)
+
+
 def build(
     dataset: pl.DataFrame | pl.LazyFrame,
     owner_col: str,
@@ -62,6 +82,7 @@ def build(
     split_col: str | None = None,
     count_col: str = "count",
     sum_col: str = "sum",
+    valid_hints: pl.DataFrame | pl.LazyFrame | None = None,
     process_method: ProcessMethod = ProcessMethod.CEIL
 ) -> tuple[ProbabDist, Channel]:
     """
@@ -88,6 +109,10 @@ def build(
     that "glue" together subrecords into a n-dimensional record 
     (e.g., transaction categories). In this case we consider that the
     output of the channel (the adversary's extra knowledge) is a pair.
+
+    If the real data is known, this function accepts the valid hints
+    in the form of a dataframe listing hint values (agg_col and maybe split_col).
+    In this case we create a Null hint that represents all invalid hints.
 
     ## Example
 
@@ -130,6 +155,13 @@ def build(
     │ [{3,2}]         ┆ {2}       ┆ 0.166667 │
     └─────────────────┴───────────┴──────────┘
     """
+    hint_cols = [agg_col, split_col]
+    hint_cols = [col for col in hint_cols if col is not None]
+
+    if valid_hints is not None:
+        diff, ok = _valid_columns(valid_hints.lazy(), hint_cols)
+        if not ok: raise ValueError(f"Missing columns {diff} in hints")
+
     record_cols = [split_col, count_col, sum_col]
     record_cols = [col for col in record_cols if col is not None]
 
@@ -155,11 +187,9 @@ def build(
         .explode(record_cols)
     )
 
-    hint_cols = [agg_col, split_col]
-    hint_cols = [col for col in hint_cols if col is not None]
     expr_agg_col = pl.int_ranges(0, pl.col(sum_col) + 1).alias(agg_col)
 
-    hints = (
+    hints = valid_hints.lazy() if valid_hints is not None else (
         wide_records
         .with_columns(expr_agg_col)
         .select(hint_cols)
@@ -210,10 +240,16 @@ def build(
     expr_weight = pl.col(count_col) / pl.col("record_len")
     expr_p = (pl.col("p") * expr_weight).alias("p")
 
+    maybe_fill_invalid = (
+        (lambda lf: lf) if valid_hints is None
+         else _fill_invalid
+     )
+
     ch_dist = (
         ch_dist_unnorm
         .join(record_lens, on="record")
         .select("record", expr_hint, expr_p)
+        .pipe(maybe_fill_invalid)
     )
 
     ch = Channel.from_polars(ch_dist, ["record"], ["hint"])
