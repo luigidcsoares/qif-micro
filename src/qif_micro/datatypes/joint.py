@@ -32,7 +32,15 @@ class Joint:
 
     def __repr__(self):
         """ Warning: might be expensive!"""
+        schema = self.dist.collect_schema()
         sorted_dist = self.dist.sort(self.input + self.output)
+
+        for col in self.input + self.output:
+            dtype = schema[col]
+            if isinstance(dtype, pl.List):
+                sort_within_expr = pl.col(col).list.sort()
+                sorted_dist = sorted_dist.with_columns(sort_within_expr)
+
         return sorted_dist.collect().__repr__()
 
     

@@ -31,7 +31,15 @@ class ProbabDist:
 
     def __repr__(self):
         """ Warning: might be expensive!"""
+        schema = self.dist.collect_schema()
         sorted_dist = self.dist.sort(self.outcome)
+
+        for col in self.outcome:
+            dtype = schema[col]
+            if isinstance(dtype, pl.List):
+                sort_within_expr = pl.col(col).list.sort()
+                sorted_dist = sorted_dist.with_columns(sort_within_expr)
+
         return sorted_dist.collect().__repr__()
 
     
