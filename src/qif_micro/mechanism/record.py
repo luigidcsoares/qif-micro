@@ -84,7 +84,7 @@ def build(
     max_record_len = _.collect().item()
 
     fields = [f"{i}" for i in range(max_record_len)]
-    def _expand_attr(lf, attr, domain):
+    def _expand_attr(lf, attr):
         repeat_domain_expr = pl.col("record").list.eval(pl.lit(domain))
         to_struct_expr = repeat_domain_expr.list.to_struct(fields=fields)
         unnest_expr = to_struct_expr.struct.unnest()
@@ -92,36 +92,44 @@ def build(
         lf = lf.with_columns(unnest_expr)
         for f in fields: lf = lf.explode(f, keep_nulls=True)
 
-        zip_expr = pl.concat_list(fields).list.drop_nulls().alias(attr)
-        lf = lf.with_columns(zip_expr)
+        zip_expr = pl.concat_list(fields).list.drop_nulls().alias("var")
+        lf = lf.with_columns(zip_expr).drop("rid", *fields)
+        return lf.with_row_index("rid")
 
-        return lf.drop("rid", *fields).with_row_index("rid")
-
-    record_dtype = domain_records.collect_schema()["record"]
-    all_attrs = record_dtype.inner.to_schema().keys()
-    keep_attrs = [attr for attr in all_attrs if attr not in attrs]
-    maybe_unnest = lambda expr: (
-        expr.alias(keep_attrs[0]) if len(keep_attrs) == 1 
-        else expr.struct.unnest()
-    )
+    all_attrs = domain_records.collect_schema()["record"].inner.to_schema().keys()
 
     _ = domain_records
-    for attr, domain in zip(attrs, attr_domains): _ = _expand_attr(_, attr, domain)
+    for attr, domain in zip(attrs, attr_domains): 
+        _ = _expand_attr(_, domain)
+        _ = _.explode(pl.exclude("rid"))
+        
+        _ = _.select("rid", pl.col("record").struct.unnest(), "var")
+        _ = _.drop(attr).rename({"var": attr})
+        
+        _ = _.select("rid", pl.struct(all_attrs).alias("record"))
+        _ = _.group_by("rid").agg(pl.col("record"))
+        _ = _.unique(pl.exclude("rid"))
 
-    _ = _.explode(pl.exclude("rid"))
-    _ = _.with_columns(maybe_unnest(pl.col("record").struct.field(keep_attrs)))
-    _ = _.select("rid", pl.struct(all_attrs).alias("record"))
-    _ = _.group_by("rid").agg(pl.col("record").alias("output"))
-    output_domain = _.drop("rid")
+
+    output_domain = _.drop("rid").rename({"record": "output"})
 
     # Next step is to obtain the possible input, output pairs,
     # noting that records can only be remapped to records of same length
-    pred_join = pl.col("input").list.len() == pl.col("output").list.len()
-    cross_domain = input_domain.join_where(output_domain, pred_join)
-
-    def _extract_attr_from(col, attr):
-        extract_expr = pl.element().struct.field(attr)
+    def _extract_attr_from(col, attrs):
+        extract_expr = pl.element().struct.field(attrs)
         return pl.col(col).list.eval(extract_expr)
+        
+    keep_attrs = [attr for attr in all_attrs if attr not in attrs]
+
+    keep_input_expr = _extract_attr_from("input", keep_attrs).alias("keep_input")
+    keep_output_expr = _extract_attr_from("output", keep_attrs).alias("keep_output")
+    input_domain = input_domain.with_columns(keep_input_expr)
+    output_domain = output_domain.with_columns(keep_output_expr)
+
+    pred_join_keep = pl.col("keep_input") == pl.col("keep_output")
+    pred_join_len = pl.col("input").list.len() == pl.col("output").list.len()
+    pred_join = pred_join_keep & pred_join_len
+    cross_domain = input_domain.join_where(output_domain, pred_join)
 
     def _step_p(lf, attr, mechanism):
         lf = lf.with_columns(
@@ -142,7 +150,7 @@ def build(
         lf = lf.explode("input_attr", "output_attr")
         lf = lf.join(m_dist, on=["input_attr", "output_attr"])
         return lf.group_by("input", "output").agg(combine_p_expr)
-
+    
     _ = cross_domain.with_columns(pl.lit(1).alias("p_step"))
     for attr, m in zip(attrs, mechanisms): _ = _step_p(_, attr, m)
 
