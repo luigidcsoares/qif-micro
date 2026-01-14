@@ -14,70 +14,87 @@ def _hint_ch(
     This function expects the following shapes for each domain:
 
     Domain of records:
-    - Each row of the frame corresponds to one entry of a record
-    - Each row must be tagged with a record id
-    - Each row contains multiple columns, one for each attribute
+    - A single column named `record`, with type List
+    - The inner type of `record` must be a struct
 
     Domain of hints:
-    - Each row of the frame corresponds to a single hint
-    - Each row contains multiple columns, one for each attribute
-    - A hint is a tuple (a conjunction of all attributes in a row)
+    - A single column named `hint`, with type Struct
+    - All fields of `hint` must be fields of the inner type of `record`
 
     ## Example
+
     >>> import polars as pl
     >>> from qif_micro import model
-    >>> domain_records = pl.LazyFrame({
-    ...     "record_id": [0, 0, 1],
-    ...     "q0": [0, 1, 1],
-    ...     "q1": [0, 0, 1],
-    ...     "s0": [1, 1, 0]
-    ... })
-    >>> domain_hints = pl.LazyFrame({
-    ...     "q0": [0, 0, 1, 1],
-    ...     "q1": [0, 1, 0, 1],
-    ... })
+
+    Consider the following example with attributes `q0`, `q1`, `s0`:
+
+    >>> domain_q0 = pl.LazyFrame({ "q0": [0, 1, 2] })
+    >>> domain_q1 = pl.LazyFrame({ "q1": [0, 1, 2] })
+    >>> domain_s0 = pl.LazyFrame({ "s0": [0, 1, 2] })
+
+    Let us assume that records may have one or two entries:
+    
+    >>> _ = domain_q0.join(domain_q1, how="cross")
+    >>> _ = _.join(domain_s0, how="cross")
+    >>> domain_hints = _.select(pl.struct("q0", "q1").alias("hint").unique())
+    >>> domain_records1 = _.select(pl.concat_list(pl.struct("q0", "q1", "s0").alias("record").unique()))
+    >>> domain_records2 = domain_records1.join(domain_records1, how="cross").select(pl.concat_list(pl.all()))
+    >>> domain_records = pl.concat([domain_records1, domain_records2])
+
+    Then the hint channel is
+    
     >>> model.generic._hint_ch(domain_records, domain_hints)
-    shape: (3, 3)
+    shape: (1_404, 3)
     ┌────────────────────┬───────────┬─────┐
     │ record             ┆ hint      ┆ p   │
     │ ---                ┆ ---       ┆ --- │
     │ list[struct[3]]    ┆ struct[2] ┆ f64 │
     ╞════════════════════╪═══════════╪═════╡
-    │ [{0,0,1}, {1,0,1}] ┆ {0,0}     ┆ 0.5 │
-    │ [{0,0,1}, {1,0,1}] ┆ {1,0}     ┆ 0.5 │
-    │ [{1,1,0}]          ┆ {1,1}     ┆ 1.0 │
+    │ [{0,0,0}]          ┆ {0,0}     ┆ 1.0 │
+    │ [{0,0,0}, {0,0,0}] ┆ {0,0}     ┆ 1.0 │
+    │ [{0,0,0}, {0,0,1}] ┆ {0,0}     ┆ 1.0 │
+    │ [{0,0,0}, {0,0,2}] ┆ {0,0}     ┆ 1.0 │
+    │ [{0,0,0}, {0,1,0}] ┆ {0,0}     ┆ 0.5 │
+    │ …                  ┆ …         ┆ …   │
+    │ [{2,1,2}, {2,2,2}] ┆ {2,1}     ┆ 0.5 │
+    │ [{2,1,2}, {2,2,2}] ┆ {2,2}     ┆ 0.5 │
+    │ [{2,2,0}, {2,2,2}] ┆ {2,2}     ┆ 1.0 │
+    │ [{2,2,1}, {2,2,2}] ┆ {2,2}     ┆ 1.0 │
+    │ [{2,2,2}, {2,2,2}] ┆ {2,2}     ┆ 1.0 │
     └────────────────────┴───────────┴─────┘
     """
-    domain_records = domain_records.lazy().unique()
-    domain_hints = domain_hints.lazy().unique()
-
     # Valid both domains first. We use assert bc this is an internal function.
-    expected_cols = ["record_id"]
+    expected_cols = ["record"]
     diff, ok = _valid_columns(domain_records, expected_cols)
-    assert ok, "Record domain missing `record_id`"
+    assert ok, "Record domain missing `record`"
 
-    hint_schema = domain_hints.collect_schema()
-    expected_cols = hint_schema.names() 
-    diff, ok = _valid_columns(domain_records, expected_cols)
-    assert ok, "Mismatch between hint and record attributes"
+    record_schema = domain_records.collect_schema()["record"]
+    assert record_schema == pl.List, "`record` dtype must be list"
 
-    record_schema = domain_records.collect_schema()
-    record_attrs = [c for c in record_schema.names() if c != "record_id"]
-    hint_attrs = hint_schema.names()
+    entry_schema = record_schema.inner
+    assert entry_schema == pl.Struct, "`record` inner dtype must be struct"
 
-    _ = domain_records.join(domain_hints, on=hint_attrs)
-    _ = _.with_columns(
-       pl.len().over("record_id").alias("record_len"),
-       pl.len().over("record_id", *hint_attrs).alias("freq")
-    )
-    _ = _.with_columns((pl.col("freq") / pl.col("record_len")).alias("p"))
+    expected_cols = ["hint"]
+    diff, ok = _valid_columns(domain_hints, expected_cols)
+    assert ok, "Record domain missing `hint`"
 
-    ch_dist = _.select(
-        pl.struct(record_attrs).implode().over("record_id").alias("record"),
-        pl.struct(hint_attrs).alias("hint"),
-        "p"
-    )
+    hint_schema = domain_hints.collect_schema()["hint"]
+    assert hint_schema == pl.Struct, "`hint` dtype must be a struct"
 
+    record_attrs = list(entry_schema.to_schema().keys())
+    hint_attrs = list(hint_schema.to_schema().keys())
+
+    diff = set(hint_attrs) - set(record_attrs)
+    assert len(diff) == 0, "Mismatch between hint and record attributes"
+
+    extract_single_expr = pl.struct(pl.element().struct.field(hint_attrs))
+    extract_all_expr = pl.col("record").list.eval(extract_single_expr)
+
+    _ = domain_records.with_columns(extract_all_expr.alias("hint"))
+    _ = _.explode("hint").join(domain_hints, on="hint")
+    _ = _.group_by("record", "hint").agg(pl.len().alias("p"))
+
+    ch_dist = _.with_columns(pl.col("p") / pl.col("record").list.len())
     return Channel.from_polars(ch_dist, ["record"], ["hint"])
 
 
@@ -153,13 +170,14 @@ def _hyper_mechanism(
 
 
 def _strategies(
+    prior: ProbabDist,
+    mechanism: Channel,
     dataset: pl.DataFrame | pl.LazyFrame,
     gain_fn: pl.DataFrame | pl.LazyFrame,
-    prior_records: ProbabDist,
-    mechanism: Channel,
-) -> Channel:
+    hint_attrs: Iterable[str]
+) -> pl.LazyFrame:
     """
-    TODO
+    TODO: Assume gain fn has "record" as column? Create a wrapper for gain fn?
     """
     # This assumes that dataset is in the required format:
     # a single column "record" as a list of structs.
@@ -167,12 +185,42 @@ def _strategies(
     diff, ok = _valid_columns(dataset, expected_cols)
     assert ok, f"Missing columns {diff}"
 
-    _, posts_mechanism = _hyper_mechanism(prior_records, mechanism)
-
     # We first compute the sum of the posterior probabilities
     # given each record in the sanitised dataset.
-    _ = posts_mechanism.join(
-        dataset, left_on="record", right_on=mechanism.input
-    )
+    dataset = dataset.rename({"record": mechanism.output[0]})
 
-    agg_posteriors = _.group_by(mechanism.input).agg(pl.col("p").sum())
+    _, posts_mechanism = _hyper_mechanism(prior, mechanism)
+    _ = posts_mechanism.dist.join(dataset, on=mechanism.output)
+    _ = _.group_by(mechanism.input).agg(pl.col("p").sum())
+    agg_posteriors = _.rename({mechanism.input[0]: hint_ch.input[0]})
+
+    # Then we get the (sub)domain of records from the prior,
+    # and also the (sub)domain of hints, to build the hint channel:
+    record_expr = pl.col(prior.outcome).unique().alias("record")
+    domain_records = prior.dist.select(record_expr)
+
+    extract_expr = pl.col("record").struct.field(hint_attrs)
+    _ = domain_records.with_row_index("rid")
+    _ = _.explode("record")
+    _ = _.select(pl.struct(extract_expr).alias("hint"))
+    domain_hints = _.unique()
+
+    # We then join each record (input) on the hint channel, gain fn an agg posteriors,
+    # and sum over records, to compute the expected gain for each hint and action:
+    combine_p_expr = (pl.col("p") * pl.col("p_right")).alias("p")
+    _ = hint_ch.dist.join(agg_posteriors, on=hint_ch.input)
+    _ = _.with_columns(combine_p_expr).drop("p_right")
+
+    # TODO: `record` and `gain` are hardcoded for now, we should change this
+    combine_gain_expr = (pl.col("p") * pl.col("gain")).alias("gain")
+    _ = _.join(gain_fn, left_on=hint_ch.input, right_on="record")
+    _ = _.with_columns(combine_gain_expr).drop("p")
+    _ = _.group_by(*hint_ch.output, "action")
+    expected_gain = _.agg(pl.col("gain").sum())
+
+    # Finally, we compute the argmax (as a set) for each hint:
+    max_expr = pl.col("gain").max().over(hint_ch.output).alias("max")
+    filter_expr = pl.col("gain") == pl.col("max")
+    argmax = expected_gain.with_columns(max_expr).filter(filter_expr)
+
+    return argmax.select(*hint_ch.output, "action")
