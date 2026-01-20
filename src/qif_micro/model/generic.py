@@ -1,107 +1,16 @@
-from collections.abc import Iterable
+# from collections.abc import Iterable
 
 import polars as pl
 
 from qif_micro import qif
-from qif_micro.datatypes import Channel, Joint, ProbabDist
+from qif_micro.datatypes import channel, Channel, LazyChannel
+from qif_micro.datatypes import probab_dist, ProbabDist, LazyProbabDist
 from qif_micro._internal.dataset import _valid_columns
 
-def _hint_ch(
-    domain_records: pl.DataFrame | pl.LazyFrame,
-    domain_hints: pl.DataFrame | pl.LazyFrame,
-) -> Channel:
-    """
-    This function expects the following shapes for each domain:
-
-    Domain of records:
-    - A single column named `record`, with type List
-    - The inner type of `record` must be a struct
-
-    Domain of hints:
-    - A single column named `hint`, with type Struct
-    - All fields of `hint` must be fields of the inner type of `record`
-
-    ## Example
-
-    >>> import polars as pl
-    >>> from qif_micro import model
-
-    Consider the following example with attributes `q0`, `q1`, `s0`:
-
-    >>> domain_q0 = pl.LazyFrame({ "q0": [0, 1, 2] })
-    >>> domain_q1 = pl.LazyFrame({ "q1": [0, 1, 2] })
-    >>> domain_s0 = pl.LazyFrame({ "s0": [0, 1, 2] })
-
-    Let us assume that records may have one or two entries:
-    
-    >>> _ = domain_q0.join(domain_q1, how="cross")
-    >>> _ = _.join(domain_s0, how="cross")
-    >>> domain_hints = _.select(pl.struct("q0", "q1").alias("hint").unique())
-    >>> domain_records1 = _.select(pl.concat_list(pl.struct("q0", "q1", "s0").alias("record").unique()))
-    >>> domain_records2 = domain_records1.join(domain_records1, how="cross").select(pl.concat_list(pl.all()))
-    >>> domain_records = pl.concat([domain_records1, domain_records2])
-
-    Then the hint channel is
-    
-    >>> model.generic._hint_ch(domain_records, domain_hints)
-    shape: (1_404, 3)
-    ┌────────────────────┬───────────┬─────┐
-    │ record             ┆ hint      ┆ p   │
-    │ ---                ┆ ---       ┆ --- │
-    │ list[struct[3]]    ┆ struct[2] ┆ f64 │
-    ╞════════════════════╪═══════════╪═════╡
-    │ [{0,0,0}]          ┆ {0,0}     ┆ 1.0 │
-    │ [{0,0,0}, {0,0,0}] ┆ {0,0}     ┆ 1.0 │
-    │ [{0,0,0}, {0,0,1}] ┆ {0,0}     ┆ 1.0 │
-    │ [{0,0,0}, {0,0,2}] ┆ {0,0}     ┆ 1.0 │
-    │ [{0,0,0}, {0,1,0}] ┆ {0,0}     ┆ 0.5 │
-    │ …                  ┆ …         ┆ …   │
-    │ [{2,1,2}, {2,2,2}] ┆ {2,1}     ┆ 0.5 │
-    │ [{2,1,2}, {2,2,2}] ┆ {2,2}     ┆ 0.5 │
-    │ [{2,2,0}, {2,2,2}] ┆ {2,2}     ┆ 1.0 │
-    │ [{2,2,1}, {2,2,2}] ┆ {2,2}     ┆ 1.0 │
-    │ [{2,2,2}, {2,2,2}] ┆ {2,2}     ┆ 1.0 │
-    └────────────────────┴───────────┴─────┘
-    """
-    # Valid both domains first. We use assert bc this is an internal function.
-    expected_cols = ["record"]
-    diff, ok = _valid_columns(domain_records, expected_cols)
-    assert ok, "Record domain missing `record`"
-
-    record_schema = domain_records.collect_schema()["record"]
-    assert record_schema == pl.List, "`record` dtype must be list"
-
-    entry_schema = record_schema.inner
-    assert entry_schema == pl.Struct, "`record` inner dtype must be struct"
-
-    expected_cols = ["hint"]
-    diff, ok = _valid_columns(domain_hints, expected_cols)
-    assert ok, "Record domain missing `hint`"
-
-    hint_schema = domain_hints.collect_schema()["hint"]
-    assert hint_schema == pl.Struct, "`hint` dtype must be a struct"
-
-    record_attrs = list(entry_schema.to_schema().keys())
-    hint_attrs = list(hint_schema.to_schema().keys())
-
-    diff = set(hint_attrs) - set(record_attrs)
-    assert len(diff) == 0, "Mismatch between hint and record attributes"
-
-    extract_single_expr = pl.struct(pl.element().struct.field(hint_attrs))
-    extract_all_expr = pl.col("record").list.eval(extract_single_expr)
-
-    _ = domain_records.with_columns(extract_all_expr.alias("hint"))
-    _ = _.explode("hint").join(domain_hints, on="hint")
-    _ = _.group_by("record", "hint").agg(pl.len().alias("p"))
-
-    ch_dist = _.with_columns(pl.col("p") / pl.col("record").list.len())
-    return Channel.from_polars(ch_dist, ["record"], ["hint"])
-
-
 def _hyper_mechanism(
-    prior: ProbabDist,
-    mechanism: Channel
-) -> [ProbabDist, Channel]:
+    prior: ProbabDist | LazyProbabDist,
+    mechanism: Channel | LazyChannel
+) -> [LazyProbabDist, LazyChannel]:
     """
     This function takes a prior and a mechanism (e.g., geometric noise),
     and it returns a hyper-distribution as a pair:
@@ -113,19 +22,21 @@ def _hyper_mechanism(
     >>> import polars as pl
     >>> from qif_micro import mechanism
     >>> from qif_micro import model
+    >>> from qif_micro.datatypes import channel
+    >>> from qif_micro.datatypes import probab_dist
 
     >>> input_domain = [0, 1, 2]
     >>> output_domain = [0, 1, 2]
-    >>> tg = mechanism.geometric.build(input_domain, output_domain, 1/3)
+    >>> tg = mechanism.geometric(input_domain, output_domain, 1/3)
 
     >>> prior_dist = pl.LazyFrame({
-    ...     "outcome": [0, 1, 2],
+    ...     "secret": [0, 1, 2],
     ...     "p": [1/4, 1/2, 1/4],
     ... })
-    >>> prior = ProbabDist.from_polars(prior_dist, ["outcome"])
+    >>> prior = probab_dist.make_lazy(prior_dist, ["secret"])
 
     >>> outer, posteriors = model.generic._hyper_mechanism(prior, tg)
-    >>> outer
+    >>> probab_dist.collect(outer)
     shape: (3, 2)
     ┌────────┬──────────┐
     │ output ┆ p        │
@@ -136,7 +47,7 @@ def _hyper_mechanism(
     │ 1      ┆ 0.333333 │
     │ 2      ┆ 0.333333 │
     └────────┴──────────┘
-    >>> posteriors
+    >>> channel.collect(posteriors)
     shape: (9, 3)
     ┌────────┬───────┬────────┐
     │ output ┆ input ┆ p      │
@@ -158,69 +69,140 @@ def _hyper_mechanism(
 
     p_expr = pl.col("p").sum()
     outer_dist = joint.dist.group_by(joint.output).agg(p_expr)
-    outer = ProbabDist.from_polars(outer_dist, joint.output)
+    outer = probab_dist.make_lazy(outer_dist, joint.output)
 
     p_expr = (pl.col("p") / pl.col("p_right")).alias("p")
-    post_dists = joint.dist.join(outer_dist, on=joint.output).select(
-        *joint.output, *joint.input, p_expr
-    )
+    _ = joint.dist.join(outer_dist, on=joint.output)
+    post_dists = _.select(*joint.output, *joint.secret, p_expr)
 
-    posts = Channel.from_polars(post_dists, joint.output, joint.input)
+    posts = channel.make_lazy(post_dists, joint.output, joint.secret)
     return outer, posts
 
 
-def _strategies(
-    prior: ProbabDist,
-    mechanism: Channel,
+def from_dataset(
     dataset: pl.DataFrame | pl.LazyFrame,
-    gain_fn: pl.DataFrame | pl.LazyFrame,
-    hint_attrs: Iterable[str]
-) -> pl.LazyFrame:
+    prior: ProbabDist | LazyProbabDist,
+    mechanism: Channel | LazyChannel
+) -> LazyProbabDist:
     """
-    TODO: Assume gain fn has "record" as column? Create a wrapper for gain fn?
+    This functioni takes a (possibly sanitised) dataset,
+    a prior knowledge on records and the mechanism from records to records
+    that was used to generate the dataset (it could be an identity mechanism).
+
+    It then returns the adversary's intermediate knowledge on records,
+    conditioned on the observation of the dataset.
+
+    ## Example
+    
+    >>> import polars as pl
+    >>> from qif_micro import mechanism
+    >>> from qif_micro import model
+    >>> from qif_micro.datatypes import channel
+    >>> from qif_micro.datatypes import probab_dist
+
+    Consider the following sanitised dataset:
+    >>> dataset = pl.LazyFrame({
+    ...     "record_id": [0, 0, 1, 1, 2, 2],
+    ...     "qid": [0, 0, 0, 1, 0, 0],
+    ...     "sens": [0, 0, 0, 0, 1, 1]
+    ... })
+
+    Now, suppose that the domain of qid and sens is the same: {0, 1, 2},
+    and suppose that it was applied geometric noise to each attribute:
+
+    >>> input_domain = [0, 1, 2]
+    >>> output_domain = [0, 1, 2]
+    >>> tg = mechanism.geometric(input_domain, output_domain, 1/3)
+    
+    The domain of records that could have been mapped to the records
+    observed in the sanitised dataset can be computed as follows:
+
+    >>> domain_q = pl.LazyFrame({ "qid": [0, 1, 2] })
+    >>> domain_s = pl.LazyFrame({ "sens": [0, 1, 2] })
+    >>> unique_record_expr = pl.struct("qid", "sens").alias("record").unique()
+    >>> _ = domain_q.join(domain_q, how="cross")
+    >>> _ = _.join(domain_s, how="cross")
+    >>> _ = _.select(pl.concat_list(unique_record_expr))
+    >>> domain_records = _.join(_, how="cross").select(pl.concat_list(pl.all()))
+
+    Thus, the mechanism from records to records is
+    >>> m_records = mechanism.record(
+    ...     domain_records,
+    ...     ("qid", [0, 1, 2], tg),
+    ...     ("sens", [0, 1, 2], tg)
+    ... )
+
+    Consider a uniform prior over the records:
+
+    >>> p_expr = (1 / pl.len()).alias("p")
+    >>> prior_dist = domain_records.with_columns(p_expr)
+    >>> prior = probab_dist.make_lazy(prior_dist, ["record"])
+
+    Then, upon observing the sanitised dataset, the adversary's knowledge is
+
+    >>> mid_knowledge = model.generic.from_dataset(dataset, prior, m_records)
+    >>> probab_dist.collect(mid_knowledge)
+    shape: (81, 2)
+    ┌─────────────────┬──────────┐
+    │ input           ┆ p        │
+    │ ---             ┆ ---      │
+    │ list[struct[2]] ┆ f64      │
+    ╞═════════════════╪══════════╡
+    │ [{0,0}, {0,0}]  ┆ 0.105085 │
+    │ [{0,0}, {0,1}]  ┆ 0.05207  │
+    │ [{0,0}, {0,2}]  ┆ 0.017357 │
+    │ [{0,0}, {1,0}]  ┆ 0.094018 │
+    │ [{0,0}, {1,1}]  ┆ 0.03702  │
+    │ …               ┆ …        │
+    │ [{1,1}, {2,2}]  ┆ 0.001088 │
+    │ [{1,2}, {2,2}]  ┆ 0.000363 │
+    │ [{2,0}, {2,2}]  ┆ 0.000457 │
+    │ [{2,1}, {2,2}]  ┆ 0.000363 │
+    │ [{2,2}, {2,2}]  ┆ 0.000121 │
+    └─────────────────┴──────────┘
     """
-    # This assumes that dataset is in the required format:
-    # a single column "record" as a list of structs.
-    expected_cols = ["record"]
-    diff, ok = _valid_columns(dataset, expected_cols)
-    assert ok, f"Missing columns {diff}"
+    # ==================================================
+    # Pre-conditions: dataset must either be in "long"
+    #   format with rows tagged with a record_id,
+    #   or must have a single record column.
+    # ==================================================
+     
+    dataset = dataset.lazy()
+    diff_record, ok_record = _valid_columns(dataset, ["record"])
+    diff_id, ok_id = _valid_columns(dataset, ["record_id"])
+    if not (ok_record or ok_id):
+        msg_record = "Dataset must either have a single `record` column"
+        msg_id = "have a column `record_id` tagged to every entry"
+        raise ValueError(f"{msg_record} or {msg_id}")
 
-    # We first compute the sum of the posterior probabilities
-    # given each record in the sanitised dataset.
-    dataset = dataset.rename({"record": mechanism.output[0]})
+    schema = dataset.collect_schema()
+    if ok_record:
+        ok_record_type = schema["record"] == pl.List
+        if not ok_record_type:
+            raise ValueError("`record` dtype must be list")
 
+        ok_record_inner = schema["record"].inner == pl.Struct
+        if not ok_record_inner:
+            raise ValueError("`record` inner dtype must be struct")
+
+    else: # Transform dataset into long form
+        record_attrs = [c for c in schema.keys() if c != "record_id"]
+        record_expr = pl.struct(record_attrs).alias("record")
+        _ = dataset.select("record_id", record_expr)
+        _= _.group_by("record_id")
+        dataset = _.agg(pl.col("record"))
+
+    # ==================================================
+    # Finished pre-conditions
+    # ==================================================
+    
+    n_records_expr = pl.len().alias("n_records")
+    record_expr = pl.col("record").alias(mechanism.output[0])
+    dataset = dataset.select(record_expr, n_records_expr)
+    
+    p_expr = (pl.col("p").sum() / pl.col("n_records").first()).alias("p")
     _, posts_mechanism = _hyper_mechanism(prior, mechanism)
     _ = posts_mechanism.dist.join(dataset, on=mechanism.output)
-    _ = _.group_by(mechanism.input).agg(pl.col("p").sum())
-    agg_posteriors = _.rename({mechanism.input[0]: hint_ch.input[0]})
+    intermediate_dist = _.group_by(mechanism.secret).agg(p_expr)
 
-    # Then we get the (sub)domain of records from the prior,
-    # and also the (sub)domain of hints, to build the hint channel:
-    record_expr = pl.col(prior.outcome).unique().alias("record")
-    domain_records = prior.dist.select(record_expr)
-
-    extract_expr = pl.col("record").struct.field(hint_attrs)
-    _ = domain_records.with_row_index("rid")
-    _ = _.explode("record")
-    _ = _.select(pl.struct(extract_expr).alias("hint"))
-    domain_hints = _.unique()
-
-    # We then join each record (input) on the hint channel, gain fn an agg posteriors,
-    # and sum over records, to compute the expected gain for each hint and action:
-    combine_p_expr = (pl.col("p") * pl.col("p_right")).alias("p")
-    _ = hint_ch.dist.join(agg_posteriors, on=hint_ch.input)
-    _ = _.with_columns(combine_p_expr).drop("p_right")
-
-    # TODO: `record` and `gain` are hardcoded for now, we should change this
-    combine_gain_expr = (pl.col("p") * pl.col("gain")).alias("gain")
-    _ = _.join(gain_fn, left_on=hint_ch.input, right_on="record")
-    _ = _.with_columns(combine_gain_expr).drop("p")
-    _ = _.group_by(*hint_ch.output, "action")
-    expected_gain = _.agg(pl.col("gain").sum())
-
-    # Finally, we compute the argmax (as a set) for each hint:
-    max_expr = pl.col("gain").max().over(hint_ch.output).alias("max")
-    filter_expr = pl.col("gain") == pl.col("max")
-    argmax = expected_gain.with_columns(max_expr).filter(filter_expr)
-
-    return argmax.select(*hint_ch.output, "action")
+    return probab_dist.make_lazy(intermediate_dist, mechanism.secret)

@@ -1,41 +1,40 @@
 import polars as pl
 
-from qif_micro.datatypes import Channel, Joint, ProbabDist
+from qif_micro.datatypes import channel, Channel, LazyChannel
+from qif_micro.datatypes import probab_dist, ProbabDist, LazyProbabDist
+from qif_micro.datatypes import joint, Joint, LazyJoint
 
-def push(prior: ProbabDist, ch: Channel) -> Joint:
+def push(
+    prior: ProbabDist | LazyProbabDist,
+    ch: Channel | LazyChannel
+ ) -> LazyJoint:
     """
     Given a probability distribution `prior`: DX and a channel
     `ch`: X -> DY implementing the conditional distributions p(Y | x),
     computes the joint distribution p(X, Y) as p(x) * p(y | x).
     """
-    joint_dist = ch.dist.join(
-        prior.dist,
-        left_on=ch.input,
-        right_on=prior.outcome,
-    ).select(
-        *ch.input,
-        *ch.output,
-        (pl.col("p") * pl.col("p_right")).alias("p")
-    )
-    
-    return Joint.from_polars(joint_dist, ch.input, ch.output)
+    p_expr = (pl.col("p") * pl.col("p_right")).alias("p")
+    _ = ch.dist
+    _ = _.join(prior.dist, left_on=ch.secret, right_on=prior.secret)
+    joint_dist = _.select(*ch.secret, *ch.output, p_expr)
+    return joint.make_lazy(joint_dist, ch.secret, ch.output)    
 
 
-def push_back(joint: Joint) -> tuple[ProbabDist, Channel]:
+def push_back(joint: Joint | LazyJoint) -> tuple[
+    ProbabDist | LazyProbabDist,
+    Channel | LazyChannel
+]:
     """
     Decomposes a joint distribution into prior and channel,
     noting that p(x) = sum_x p(x, y) and p(y | x) = p(x, y) / p(x).
     """ 
-    joint_rows = joint.dist.group_by(joint.input)
-    prior_dist = joint_rows.agg(pl.col("p").sum().alias("p"))
+    _ = joint.dist.group_by(joint.secret)
+    prior_dist = _.agg(pl.col("p").sum().alias("p"))
+    prior = probab_dist.make_lazy(prior_dist, joint.secret)
 
-    ch_dist = joint.dist.join(prior_dist, on=joint.input).select(
-        *joint.input,
-        *joint.output,
-        (pl.col("p") / pl.col("p_right")).alias("p")
-    )
-
-    prior = ProbabDist.from_polars(prior_dist, joint.input)
-    ch = Channel.from_polars(ch_dist, joint.input, joint.output)
+    p_expr = (pl.col("p") / pl.col("p_right")).alias("p")
+    _ = joint.dist.join(prior_dist, on=joint.secret)
+    ch_dist = _.select(*joint.secret, *joint.output, p_expr)
+    ch = channel.make_lazy(ch_dist, joint.secret, joint.output)
 
     return prior, ch

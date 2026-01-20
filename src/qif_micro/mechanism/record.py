@@ -1,13 +1,15 @@
+from collections.abc import Iterable
+
 import polars as pl
 
-from qif_micro.datatypes import Channel
+from qif_micro.datatypes import channel, Channel, LazyChannel
 from qif_micro._internal.dataset import _valid_columns
 
 def build(
     domain_records: pl.DataFrame | pl.LazyFrame,
-    mechanism: tuple[str, [str], Channel],
-    *mechanisms: tuple[str, [str], Channel]
-) -> Channel:
+    mechanism: tuple[str, Iterable[str], Channel | LazyChannel],
+    *mechanisms: tuple[str, Iterable[str], Channel | LazyChannel]
+) -> LazyChannel:
     """
     This function produces a mechanism from records to records,
     given one or more attribut-level mechanisms.
@@ -22,13 +24,15 @@ def build(
     this function returns a slice of the channel modelling the mechanism.
 
     ## Example
-    We first construct an attribute-level mechanism:
-    
     >>> import polars as pl
     >>> from qif_micro import mechanism
+    >>> from qif_micro.datatypes import channel
+
+    We first construct an attribute-level mechanism:
+    
     >>> input_domain = [0, 1, 2]
     >>> output_domain = [0, 1, 2]
-    >>> tg = mechanism.geometric.build(input_domain, output_domain, 1/3)
+    >>> tg = mechanism.geometric(input_domain, output_domain, 1/3)
 
     Consider the following (sub)domain of records:
     >>> domain_records = pl.LazyFrame({
@@ -38,18 +42,9 @@ def build(
     ...     "s0": [1, 1, 0]
     ... })
 
-    We must first prepare the dataframe:
-    >>> entry_expr = pl.struct(pl.exclude("record_id")).alias("record")
-    >>> _ = domain_records.with_columns(entry_expr)
-    >>> _ = _.group_by("record_id").agg(pl.col("record"))
-    >>> domain_records = _.drop("record_id")
-
-    Now suppose we are applying mechanism `tg` to both q0 and s0:
-    >>> mechanism.record.build(
-    ...     domain_records,
-    ...     ("q0", [0, 1, 2], tg),
-    ...     ("s0", [0, 1, 2], tg)
-    ... )
+    Suppose we are applying mechanism `tg` to both q0 and s0:
+    >>> ch = mechanism.record(domain_records, ("q0", [0, 1, 2], tg), ("s0", [0, 1, 2], tg))
+    >>> channel.collect(ch)
     shape: (90, 3)
     ┌────────────────────┬────────────────────┬───────────┐
     │ input              ┆ output             ┆ p         │
@@ -69,12 +64,44 @@ def build(
     │ [{1,1,0}]          ┆ [{2,1,2}]          ┆ 0.020833  │
     └────────────────────┴────────────────────┴───────────┘
     """
-    expected_cols = ["record"]
-    diff, ok = _valid_columns(domain_records, expected_cols)
-    if not ok: raise ValueError(f"Missing columns in domain records {diff}")
+    # ==================================================
+    # Pre-conditions: records must either be in "long"
+    #   format with rows tagged with a record_id,
+    #   or must have a single record column.
+    # ==================================================
+    domain_records = domain_records.lazy()
+    
+    diff_record, ok_record = _valid_columns(domain_records, ["record"])
+    diff_id, ok_id = _valid_columns(domain_records, ["record_id"])
+    if not (ok_record or ok_id):
+        msg_record = "Domain of records must either have a single `record` column"
+        msg_id = "have a column `record_id` tagged to every entry"
+        raise ValueError(f"{msg_record} or {msg_id}")
 
+    schema = domain_records.collect_schema()
+    if ok_record:
+        ok_record_type = schema["record"] == pl.List
+        if not ok_record_type:
+            raise ValueError("`record` dtype must be list")
+
+        ok_record_inner = schema["record"].inner == pl.Struct
+        if not ok_record_inner:
+            raise ValueError("`record` inner dtype must be struct")
+
+    else: # Transform domain of records into long form
+        record_attrs = [c for c in schema.keys() if c != "record_id"]
+        record_expr = pl.struct(record_attrs).alias("record")
+        _ = domain_records.select("record_id", record_expr)
+        _ = _.group_by("record_id").agg(pl.col("record"))
+        domain_records = _.drop("record_id")
+
+    # ==================================================
+    # Finished pre-conditions
+    # ==================================================
+
+    mechanisms = [mechanism, *mechanisms]
+    attrs, attr_domains, mechanisms = list(zip(*mechanisms))
     input_domain = domain_records.rename({"record": "input"})
-    attrs, attr_domains, mechanisms = list(zip(*[mechanism, *mechanisms]))
 
     # Now we construct the output domain,
     # varying attributes according to each mechanism
@@ -95,8 +122,9 @@ def build(
         zip_expr = pl.concat_list(fields).list.drop_nulls().alias("var")
         lf = lf.with_columns(zip_expr).drop("rid", *fields)
         return lf.with_row_index("rid")
-
-    all_attrs = domain_records.collect_schema()["record"].inner.to_schema().keys()
+    
+    _ = domain_records.collect_schema()["record"]
+    all_attrs = _.inner.to_schema().keys()
 
     _ = domain_records
     for attr, domain in zip(attrs, attr_domains): 
@@ -109,8 +137,6 @@ def build(
         _ = _.select("rid", pl.struct(all_attrs).alias("record"))
         _ = _.group_by("rid").agg(pl.col("record"))
         _ = _.unique(pl.exclude("rid"))
-
-
     output_domain = _.drop("rid").rename({"record": "output"})
 
     # Next step is to obtain the possible input, output pairs,
@@ -120,13 +146,15 @@ def build(
         return pl.col(col).list.eval(extract_expr)
         
     keep_attrs = [attr for attr in all_attrs if attr not in attrs]
-
-    keep_input_expr = _extract_attr_from("input", keep_attrs).alias("keep_input")
-    keep_output_expr = _extract_attr_from("output", keep_attrs).alias("keep_output")
-    input_domain = input_domain.with_columns(keep_input_expr)
-    output_domain = output_domain.with_columns(keep_output_expr)
-
-    pred_join_keep = pl.col("keep_input") == pl.col("keep_output")
+    if len(keep_attrs) > 0:
+        keep_input_expr = _extract_attr_from("input", keep_attrs).alias("keep_input")
+        keep_output_expr = _extract_attr_from("output", keep_attrs).alias("keep_output")
+        input_domain = input_domain.with_columns(keep_input_expr)
+        output_domain = output_domain.with_columns(keep_output_expr)
+        pred_join_keep = pl.col("keep_input") == pl.col("keep_output")
+    else:
+        pred_join_keep = pl.lit(True)
+        
     pred_join_len = pl.col("input").list.len() == pl.col("output").list.len()
     pred_join = pred_join_keep & pred_join_len
     cross_domain = input_domain.join_where(output_domain, pred_join)
@@ -138,7 +166,7 @@ def build(
         )
 
         m_dist = mechanism.dist.select(
-            pl.col(mechanism.input).alias("input_attr"),
+            pl.col(mechanism.secret).alias("input_attr"),
             pl.col(mechanism.output).alias("output_attr"),
             "p"
         )
@@ -155,4 +183,4 @@ def build(
     for attr, m in zip(attrs, mechanisms): _ = _step_p(_, attr, m)
 
     m_dist = _.rename({"p_step": "p"})
-    return Channel.from_polars(m_dist, ["input"], ["output"])
+    return channel.make_lazy(m_dist, ["input"], ["output"])

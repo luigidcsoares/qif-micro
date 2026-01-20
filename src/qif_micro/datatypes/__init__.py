@@ -1,3 +1,3 @@
-from .channel import Channel
-from .joint import Joint
-from .probab_dist import ProbabDist
+from .channel import Channel, LazyChannel
+from .joint import Joint, LazyJoint
+from .probab_dist import ProbabDist, LazyProbabDist

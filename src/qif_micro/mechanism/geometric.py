@@ -2,13 +2,13 @@ from collections.abc import Iterable
 
 import polars as pl
 
-from qif_micro.datatypes import Channel
+from qif_micro.datatypes import channel, LazyChannel
 
 def build(
     input_domain: Iterable[int],
     output_domain: Iterable[int],
     alpha: float
-) -> Channel:
+) -> LazyChannel:
     """
     This function constructs a truncated geometric noise
     mapping integers to integers.
@@ -26,9 +26,11 @@ def build(
     ## Example
     >>> import polars as pl
     >>> from qif_micro import mechanism
+    >>> from qif_micro.datatypes import channel
     >>> input_domain = [0, 1, 2]
     >>> output_domain = [0, 1, 2]
-    >>> mechanism.geometric.build(input_domain, output_domain, 1/3)
+    >>> ch = mechanism.geometric(input_domain, output_domain, 1/3)
+    >>> channel.collect(ch)
     shape: (9, 3)
     ┌───────┬────────┬──────────┐
     │ input ┆ output ┆ p        │
@@ -46,6 +48,12 @@ def build(
     │ 2     ┆ 2      ┆ 0.75     │
     └───────┴────────┴──────────┘
     """
+    # ==================================================
+    # Pre-conditions: validate
+    #   - 0 <= alpha <= 1
+    #   - input/output domains
+    # ==================================================
+     
     if (alpha < 0) or (alpha > 1):
         raise ValueError("Alpha param has to be in the range [0, 1]")
 
@@ -55,6 +63,10 @@ def build(
     if len(input_domain - output_domain) > 0:
         raise ValueError("Input domain must be a subset of output")
 
+    # ==================================================
+    # Finished pre-conditions
+    # ==================================================
+    
     input_domain = pl.LazyFrame({"input": list(input_domain)})
     output_domain = pl.LazyFrame({"output": list(output_domain)})
 
@@ -66,10 +78,9 @@ def build(
     )
 
     mask_expr = (~pl.col("is_max") & ~pl.col("is_min")).cast(int)
-    ch_dist = _.select(
-        "input", "output",
-        ((1 - alpha)**mask_expr * alpha**pl.col("d") / (1 + alpha))
-        .alias("p")
-    )
+    cond_expr = (1 - alpha)**mask_expr
+    fixed_expr = alpha**pl.col("d") / (1 + alpha)
+    p_expr = (cond_expr * fixed_expr).alias("p")
 
-    return Channel.from_polars(ch_dist, ["input"], ["output"])
+    ch_dist = _.select("input", "output", p_expr)
+    return channel.make_lazy(ch_dist, ["input"], ["output"])
