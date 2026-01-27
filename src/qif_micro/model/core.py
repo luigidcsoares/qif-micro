@@ -1,23 +1,18 @@
 import polars as pl
 
 from qif_micro.datatypes import channel, LazyChannel
-from qif_micro._internal.dataset import _valid_columns
+from qif_micro.datatypes import probab_dist, LazyProbabDist
+from qif_micro._internal import (
+     _prepare_hints,
+     _prepare_records,
+     _valid_columns   
+)
 
-def build_hint_ch(
+def hint_ch(
     domain_records: pl.DataFrame | pl.LazyFrame,
     domain_hints: pl.DataFrame | pl.LazyFrame,
 ) -> LazyChannel:
     """
-    This function expects the following shapes for each domain:
-
-    Domain of records:
-    - A single column named `record`, with type List
-    - The inner type of `record` must be a struct
-
-    Domain of hints:
-    - A single column named `hint`, with type Struct
-    - All fields of `hint` must be fields of the inner type of `record`
-
     ## Example
 
     >>> import polars as pl
@@ -65,26 +60,11 @@ def build_hint_ch(
     # ==================================================
     # Pre-conditions: valid both domains first
     # ==================================================
+    domain_records = _prepare_records(domain_records)
+    domain_hints = _prepare_hints(domain_hints)
 
-    expected_cols = ["record"]
-    diff, ok = _valid_columns(domain_records, expected_cols)
-    if not ok: raise ValueError("Record domain missing `record`")
-
-    record_schema = domain_records.collect_schema()["record"]
-    if record_schema != pl.List:
-        raise ValueError("`record` dtype must be list")
-
-    entry_schema = record_schema.inner
-    if entry_schema != pl.Struct:
-        raise ValueError("`record` inner dtype must be struct")
-
-    expected_cols = ["hint"]
-    diff, ok = _valid_columns(domain_hints, expected_cols)
-    if not ok: raise ValueError("Record domain missing `hint`")
-
+    entry_schema = domain_records.collect_schema()["record"].inner
     hint_schema = domain_hints.collect_schema()["hint"]
-    if hint_schema != pl.Struct:
-        raise ValueError("`hint` dtype must be a struct")
 
     record_attrs = list(entry_schema.to_schema().keys())
     hint_attrs = list(hint_schema.to_schema().keys())
@@ -106,3 +86,46 @@ def build_hint_ch(
 
     ch_dist = _.with_columns(pl.col("p") / pl.col("record").list.len())
     return channel.make_lazy(ch_dist, ["record"], ["hint"])
+
+
+def baseline(dataset: pl.DataFrame | pl.LazyFrame) -> LazyProbabDist:
+    """
+    This functions takes the real (de-identified) dataset
+    and constructs the adversary's intermediate knowledge on records
+    upon observing the real dataset. This is computed following a
+    frequestist approach, meaning that for each record we count
+    how many times that record occurs in the dataset.
+
+    ## Example
+    
+    >>> import polars as pl
+    >>> from qif_micro import model
+    >>> dataset = pl.DataFrame({
+    ...     "record_id": [0, 0, 1, 1, 2, 2, 2],
+    ...     "amount": [1.0, 1.0, 0.0, 2.0, 0.0, 1.0, 1.0],
+    ... })
+    >>> mid_knowledge = model.baseline(dataset)
+    >>> probab_dist.collect(mid_knowledge)
+    shape: (3, 2)
+    ┌───────────────────────┬──────────┐
+    │ record                ┆ p        │
+    │ ---                   ┆ ---      │
+    │ list[struct[1]]       ┆ f64      │
+    ╞═══════════════════════╪══════════╡
+    │ [{0.0}, {1.0}, {1.0}] ┆ 0.333333 │
+    │ [{0.0}, {2.0}]        ┆ 0.333333 │
+    │ [{1.0}, {1.0}]        ┆ 0.333333 │
+    └───────────────────────┴──────────┘
+    """
+    # ==================================================
+    # Pre-conditions: dataset must either be in "long"
+    #   format with rows tagged with a record_id,
+    #   or must have a single record column.
+    # ==================================================
+    dataset = _prepare_records(dataset)
+    
+    p_expr = (pl.len() / pl.col("n_rows").first()).alias("p")
+    _ = dataset.with_columns(pl.len().alias("n_rows"))
+    dist = _.group_by("record").agg(p_expr)
+
+    return probab_dist.make_lazy(dist, ["record"])

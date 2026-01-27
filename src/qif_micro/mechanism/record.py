@@ -3,7 +3,7 @@ from collections.abc import Iterable
 import polars as pl
 
 from qif_micro.datatypes import channel, Channel, LazyChannel
-from qif_micro._internal.dataset import _valid_columns
+from qif_micro._internal import _prepare_records, _valid_columns
 
 def build(
     domain_records: pl.DataFrame | pl.LazyFrame,
@@ -13,9 +13,6 @@ def build(
     """
     This function produces a mechanism from records to records,
     given one or more attribut-level mechanisms.
-
-    This expects `domain_records` to be a frame with a single column
-    "record", which must be a list of structs (list of maps).
 
     The domain of records should contain all records that are possible
     according to the adversary's knowledge, but it need not
@@ -69,31 +66,7 @@ def build(
     #   format with rows tagged with a record_id,
     #   or must have a single record column.
     # ==================================================
-    domain_records = domain_records.lazy()
-    
-    diff_record, ok_record = _valid_columns(domain_records, ["record"])
-    diff_id, ok_id = _valid_columns(domain_records, ["record_id"])
-    if not (ok_record or ok_id):
-        msg_record = "Domain of records must either have a single `record` column"
-        msg_id = "have a column `record_id` tagged to every entry"
-        raise ValueError(f"{msg_record} or {msg_id}")
-
-    schema = domain_records.collect_schema()
-    if ok_record:
-        ok_record_type = schema["record"] == pl.List
-        if not ok_record_type:
-            raise ValueError("`record` dtype must be list")
-
-        ok_record_inner = schema["record"].inner == pl.Struct
-        if not ok_record_inner:
-            raise ValueError("`record` inner dtype must be struct")
-
-    else: # Transform domain of records into long form
-        record_attrs = [c for c in schema.keys() if c != "record_id"]
-        record_expr = pl.struct(record_attrs).alias("record")
-        _ = domain_records.select("record_id", record_expr)
-        _ = _.group_by("record_id").agg(pl.col("record"))
-        domain_records = _.drop("record_id")
+    domain_records = _prepare_records(domain_records)
 
     # ==================================================
     # Finished pre-conditions

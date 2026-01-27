@@ -5,7 +5,7 @@ import polars as pl
 from qif_micro import qif
 from qif_micro.datatypes import channel, Channel, LazyChannel
 from qif_micro.datatypes import probab_dist, ProbabDist, LazyProbabDist
-from qif_micro._internal.dataset import _valid_columns
+from qif_micro._internal import _valid_columns
 
 def _hyper_mechanism(
     prior: ProbabDist | LazyProbabDist,
@@ -79,13 +79,13 @@ def _hyper_mechanism(
     return outer, posts
 
 
-def from_dataset(
+def intermediate(
     dataset: pl.DataFrame | pl.LazyFrame,
     prior: ProbabDist | LazyProbabDist,
     mechanism: Channel | LazyChannel
 ) -> LazyProbabDist:
     """
-    This functioni takes a (possibly sanitised) dataset,
+    This function takes a (possibly sanitised) dataset,
     a prior knowledge on records and the mechanism from records to records
     that was used to generate the dataset (it could be an identity mechanism).
 
@@ -140,7 +140,7 @@ def from_dataset(
 
     Then, upon observing the sanitised dataset, the adversary's knowledge is
 
-    >>> mid_knowledge = model.generic.from_dataset(dataset, prior, m_records)
+    >>> mid_knowledge = model.generic.intermediate(dataset, prior, m_records)
     >>> probab_dist.collect(mid_knowledge)
     shape: (81, 2)
     ┌─────────────────┬──────────┐
