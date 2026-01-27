@@ -8,6 +8,8 @@ def _prepare_records(lf: pl.DataFrame | pl.LazyFrame) -> pl.LazyFrame:
     #   in "long" format with rows tagged with a record_id,
     #   or must have a single record column.
     # ==================================================
+    lf = lf.lazy()
+    
     diff_record, ok_record = _valid_columns(lf, ["record"])
     diff_id, ok_id = _valid_columns(lf, ["record_id"])
     if not (ok_record or ok_id):
@@ -35,6 +37,8 @@ def _prepare_records(lf: pl.DataFrame | pl.LazyFrame) -> pl.LazyFrame:
 
 
 def _prepare_hints(lf: pl.DataFrame | pl.LazyFrame) -> pl.LazyFrame:
+    lf = lf.lazy()
+    
     diff_hint, ok_hint = _valid_columns(lf, ["hint"])
     diff_id, ok_id = _valid_columns(lf, ["hint_id"])
     if not (ok_hint or ok_id):
