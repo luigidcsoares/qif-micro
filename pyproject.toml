@@ -22,3 +22,6 @@ dev = [
     "jupyter>=1.1.1",
     "pytest>=8.4.1",
 ]
+
+[tool.pytest.ini_options]
+doctest_optionflags = ["NORMALIZE_WHITESPACE"]

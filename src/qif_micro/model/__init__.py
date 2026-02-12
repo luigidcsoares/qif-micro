@@ -1,2 +1,1 @@
-from . import generic
-from .core import baseline, hint_ch
+from .baseline import build as baseline
