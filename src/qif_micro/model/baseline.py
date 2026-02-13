@@ -13,8 +13,15 @@ def build(
     *,
     owner_col: str = "owner_id",
     record_col: str = "record"
-) -> tuple[ProbabDist, Channel]:
+) -> tuple[ProbabDist, Channel, pl.LazyFrame]:
     """
+    This function takes a dataset and a set of attributes considered as the
+    adversary's auxiliary information, and returns
+
+    - The adversary's revised knowledge upon observing the dataset
+    - The slice of the hint channel that matches the adversary's knowledge
+    - A polars lazyframe that maps records to hints
+
     ## Example
     >>> import polars as pl
     >>> from qif_micro import model
@@ -25,7 +32,7 @@ def build(
     ...     "sensitive": [0, 0, 0, 0, 1, 1]
     ... })
     
-    >>> pi, ch = model.baseline(dataset, ["hint"])
+    >>> pi, ch, _ = model.baseline(dataset, ["hint"])
 
     >>> pi
     ProbabDist(dist=array([0.5 , 0.25, 0.25]))
@@ -72,14 +79,14 @@ def build(
         .select(owner_col, record_entry_expr, hint_expr)
         .group_by(owner_col)
         .agg("record_entry", "hint", len_expr)
-        .select(record_expr, "hint", "len")
+        .select(owner_col, record_expr, "hint", "len")
     )
 
     n_records_expr = pl.len().alias("n_records")
     p_expr = (pl.len() / pl.col("n_records").first()).alias("p")
 
     prior_dist = (
-        map_records_to_hints
+        map_records_to_hints.drop(owner_col)
         .with_columns(n_records_expr)
         .group_by("record")
         .agg(p_expr)
@@ -92,7 +99,7 @@ def build(
 
     p_expr = (pl.len() / pl.col("len").first()).alias("p")
     ch_dist_df = (
-        map_records_to_hints
+        map_records_to_hints.drop(owner_col)
         # Drop possible duplicate records from the dataset,
         # as in the case of the channel we count things within records
         .unique()
@@ -115,4 +122,4 @@ def build(
     pi = ProbabDist(prior_dist)
     ch = Channel(ch_dist.tocsr())
     
-    return pi, ch
+    return pi, ch, map_records_to_hints
