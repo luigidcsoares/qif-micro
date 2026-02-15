@@ -39,10 +39,9 @@ def _push(pi: datatypes.ProbabDist,  ch: datatypes.Channel) -> datatypes.Joint:
            [0.    , 0.5   , 0.    ],
            [0.    , 0.    , 0.25  ]])
     """
-    prior_dist = pi.dist[:, np.newaxis]
-    # Convert prior to keep the result as a csr_array, if channel is sparse
-    prior_dist = csr_array(prior_dist) if issparse(ch.dist) else prior_dist
-    joint_dist = ch.dist.multiply(prior_dist)
+    joint_dist = pi.dist[:, np.newaxis] * ch.dist
+    # If channel is sparse, the result will be in coo repr, so we convert to csr
+    joint_dist = joint_dist.tocsr() if issparse(ch.dist) else joint_dist
     # At this point, failure to build the joint is an implementation error
     try: return datatypes.Joint(joint_dist)
     except Exception as e: assert False, f"Joint build failed: {e!r}"
