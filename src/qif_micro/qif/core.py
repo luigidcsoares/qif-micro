@@ -38,6 +38,13 @@ def _push(pi: datatypes.ProbabDist,  ch: datatypes.Channel) -> datatypes.Joint:
     array([[0.0625, 0.125 , 0.0625],
            [0.    , 0.5   , 0.    ],
            [0.    , 0.    , 0.25  ]])
+
+    It also works if the channel is not sparse:
+    >>> ch = Channel(ch.dist.toarray())
+    >>> qif.core._push(pi, ch).dist
+    array([[0.0625, 0.125 , 0.0625],
+           [0.    , 0.5   , 0.    ],
+           [0.    , 0.    , 0.25  ]])
     """
     joint_dist = pi.dist[:, np.newaxis] * ch.dist
     # If channel is sparse, the result will be in coo repr, so we convert to csr
