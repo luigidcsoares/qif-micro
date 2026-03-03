@@ -1,7 +1,7 @@
 import numpy as np
 
+from qif_micro import qif
 from qif_micro.qif.datatypes import ProbabDist, Channel
-from qif_micro.qif.core import _push
 
 def prior(pi: ProbabDist) -> np.floating:
     """
@@ -43,4 +43,4 @@ def posterior(pi: ProbabDist, ch: Channel) -> np.floating:
     >>> bayes.posterior(pi, ch)
     np.float64(0.8125)
     """
-    return _push(pi, ch).dist.max(axis=0).sum()
+    return qif.push(pi, ch).dist.max(axis=0).sum()
