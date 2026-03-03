@@ -4,7 +4,7 @@ import polars as pl
 
 from scipy.sparse import coo_array
 
-from qif_micro.qif.datatypes import ProbabDist, Channel
+from qif_micro.qif.datatypes import Channel, ProbabDist
 from qif_micro._internal import _valid_columns
 
 def build(
@@ -12,31 +12,44 @@ def build(
     hint_attrs: Iterable[str],
     *,
     owner_col: str = "owner_id",
-    record_col: str = "record"
 ) -> tuple[ProbabDist, Channel, pl.LazyFrame]:
     """
-    This function takes a dataset and a set of attributes considered as the
-    adversary's auxiliary information, and returns
+    Build the adversary’s knowledge model from a dataset and auxiliary info.
 
-    - The adversary's revised knowledge upon observing the dataset
-    - The slice of the hint channel that matches the adversary's knowledge
-    - A polars lazyframe that maps records to hints
+    Parameters
+    ----------
+    dataset : pl.DataFrame or pl.LazyFrame
+        The data containing owners, hints and sensitive attributes.
+    hint_attrs : iterable of str
+        Attributes that represent the adversary’s auxiliary information.
+    owner_col : str, optional
+        Column name for the owner identifier.  Default is ``"owner_id"``.
 
-    ## Example
+    Returns
+    -------
+    tuple (ProbabDist, Channel, pl.LazyFrame)
+        - The adversary’s revised knowledge after observing the dataset.
+        - The slice of the hint channel that matches the adversary’s knowledge.
+        - A Polars ``LazyFrame`` that maps records to hints.
+
+    Examples
+    --------
     >>> import polars as pl
     >>> from qif_micro import model
 
+    Consider the following data:
     >>> dataset = pl.DataFrame({
     ...     "owner_id": [0, 1, 2, 2, 3, 3],
     ...     "hint": [0, 0, 0, 1, 0, 1],
     ...     "sensitive": [0, 0, 0, 0, 1, 1]
     ... })
-    
-    >>> pi, ch, _ = model.baseline(dataset, ["hint"])
 
+    The adversary's knowledge upon observing this dataset is:
+    >>> pi, ch, _ = model.baseline(dataset, ["hint"])
     >>> pi
     ProbabDist(dist=array([0.5 , 0.25, 0.25]))
 
+    And the channel modelling the adversary's auxiliary info is:
     >>> ch.dist.toarray()
     array([[1. , 0. ],
            [0.5, 0.5],
