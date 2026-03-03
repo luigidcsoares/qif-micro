@@ -8,7 +8,8 @@ from ._internal import _is_dist_valid, _ProbabDistError
 @dataclass(frozen=True)
 class ProbabDist:
     """
-    ## Example
+    Examples
+    --------
     >>> import numpy as np
     >>> from qif_micro.qif.datatypes import ProbabDist
     >>> ProbabDist(np.array([1/4, 1/2, 1/4]))

@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 import numpy as np
+
 from numpy.typing import NDArray
 from scipy.sparse import csr_array
 
@@ -9,16 +10,19 @@ from ._internal import _is_dist_valid, _ProbabDistError
 @dataclass(frozen=True)
 class Channel:
     """
-    ## Example
+    The ``Channel`` class stores an stochastic matrix.
+    The matrix may be dense (numpy array) or sparse (scipy csr_array).
+
+    Examples
+    --------
     >>> from scipy.sparse import csr_array
     >>> from qif_micro.qif.datatypes import Channel
 
-    >>> ch_dist = csr_array([
-    ...     [1/4, 1/2, 1/4], # First row
-    ...     [0,     1,   0], # Second row
-    ...     [0,     0,   1]  # Third row
-    ... ])
-    >>> ch = Channel(ch_dist)
+    >>> ch = Channel(csr_array([
+    ...     [1/4, 1/2, 1/4],   # First row
+    ...     [0,   1,   0],     # Second row
+    ...     [0,   0,   1],     # Third row
+    ... ]))
 
     >>> ch
     Channel(dist=<Compressed Sparse Row sparse array of dtype 'float64'

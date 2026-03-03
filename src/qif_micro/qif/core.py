@@ -15,7 +15,8 @@ def _push(pi: datatypes.ProbabDist,  ch: datatypes.Channel) -> datatypes.Joint:
     """
     Pushes a prior through a channel to compute a joint distribution.
 
-    ## Example 
+    Examples
+    --------
     >>> import numpy as np
     >>> from scipy.sparse import csr_array
     >>> from qif_micro import qif
