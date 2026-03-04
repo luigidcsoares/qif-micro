@@ -9,16 +9,16 @@ from ._internal import _is_dist_valid, _ProbabDistError
 @dataclass(frozen=True)
 class Joint:
     """
-    ## Example
+    Examples
+    --------
     >>> from scipy.sparse import csr_array
     >>> from qif_micro.qif.datatypes import Joint
 
-    >>> joint_dist = csr_array([
+    >>> joint = Joint(csr_array([
     ...     [1/16, 1/8, 1/16], # First row
     ...     [0,    1/2,    0], # Second row
     ...     [0,      0,  1/4]  # Third row
-    ... ])
-    >>> joint = Joint(joint_dist)
+    ... ]))
 
     >>> joint
     Joint(dist=<Compressed Sparse Row sparse array of dtype 'float64'
