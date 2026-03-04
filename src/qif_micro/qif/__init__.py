@@ -1,3 +1,3 @@
-from . import compose, datatypes, measure, probab
+from . import channel, compose, datatypes, measure, probab
 
-__all__ = ["compose", "datatypes", "measure", "probab"]
+__all__ = ["channel", "compose", "datatypes", "measure", "probab"]
