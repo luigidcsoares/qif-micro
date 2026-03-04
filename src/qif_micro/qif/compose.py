@@ -1,8 +1,6 @@
 import itertools
 import math
 
-from typing import Any
-
 import numpy as np
 import polars as pl
 
@@ -10,28 +8,9 @@ from numpy.typing import NDArray
 from scipy.sparse import csr_array, hstack, issparse
 
 from qif_micro.qif.datatypes import Channel
-
-def _duplicate_indices(arr: NDArray[Any]):
-    # The following code is based on numpy's implementation of the inverse indices
-    # returned by np.unique, which contains the indices in the original array
-    # that corresponds to the unique values. We use this as a dense rank.
-    #
-    # Since this is usually called with sparse channels, meaning that memory
-    # is a concern, we use heapsort as it has better space complexity.
-    perm = np.argsort(arr, kind="heapsort")
-    sorted_indices = arr[perm] # Should be just a view, no extra memory
+from qif_micro.qif._utils import _duplicate_indices
     
-    mask = np.empty(sorted_indices.shape, dtype=bool)
-    mask[0] = True
-    mask[1:] = sorted_indices[1:] != sorted_indices[:-1] # Is i + 1 = i?
-
-    indices = np.empty(mask.shape, dtype=np.intp)
-    indices[perm] = np.cumsum(mask) - 1
-
-    return indices
-    
-
-def _unreduced_parallel(lhs: NDArray[np.floating], rhs: NDArray[np.floating]):
+def _sparse_parallel(lhs: NDArray[np.floating], rhs: NDArray[np.floating]):
     # The following implements row-wise outer product (parallel composition)
     # for scipy sparse matrices. There isn't yet an official implementation in scipy,
     # so this was obtained from: https://stackoverflow.com/questions/57099722/row-wise-outer-product-on-sparse-matrices
@@ -65,7 +44,6 @@ def _unreduced_parallel(lhs: NDArray[np.floating], rhs: NDArray[np.floating]):
 def parallel(
     lhs: Channel,
     rhs: Channel,
-    *,
     opt_memory: bool = True,
     n_partitions: int = 1,
     return_n_opt: bool = False
@@ -142,7 +120,7 @@ def parallel(
 
     # If memory is not a concern (even though channels are sparse),
     # just do the parallel composition without any optimisation.
-    if not opt_memory: return Channel(_unreduced_parallel(lhs, rhs))
+    if not opt_memory: return Channel(_sparse_parallel(lhs, rhs))
     
     # Otherwise, parallel optimisation is enabled.
     # 
@@ -180,7 +158,7 @@ def parallel(
 
     part_indptr = [i*part_size for i in range(n_partitions)] + [lhs.shape[1]]
     part_ranges = zip(part_indptr[:-1], part_indptr[1:])
-    parts = [_unreduced_parallel(lhs[:, i:j], rhs) for i, j in part_ranges]
+    parts = [_sparse_parallel(lhs[:, i:j], rhs) for i, j in part_ranges]
     
     # Finally, we combine column-wise the reduced and unreduced slices of the parallel composition:
     # Pos-condition: optimised slice goes into the beginning of the matrix (first cols)

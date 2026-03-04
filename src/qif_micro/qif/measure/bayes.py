@@ -43,4 +43,4 @@ def posterior(pi: ProbabDist, ch: Channel) -> np.floating:
     >>> bayes.posterior(pi, ch)
     np.float64(0.8125)
     """
-    return qif.push(pi, ch).dist.max(axis=0).sum()
+    return qif.probab.joint(pi, ch).dist.max(axis=0).sum()

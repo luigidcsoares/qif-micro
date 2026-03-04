@@ -10,8 +10,8 @@ from qif_micro._internal import _valid_columns
 def build(
     dataset: pl.DataFrame | pl.LazyFrame,
     hint_attrs: Iterable[str],
-    *,
     owner_col: str = "owner_id",
+    return_map: bool = False
 ) -> tuple[ProbabDist, Channel, pl.LazyFrame]:
     """
     Build the adversary’s knowledge model from a dataset and auxiliary info.
@@ -20,17 +20,22 @@ def build(
     ----------
     dataset : pl.DataFrame or pl.LazyFrame
         The data containing owners, hints and sensitive attributes.
+
     hint_attrs : iterable of str
         Attributes that represent the adversary’s auxiliary information.
-    owner_col : str, optional
-        Column name for the owner identifier.  Default is ``"owner_id"``.
+
+    owner_col : str, optional (default: ``"owner_id"``)
+        Column name for the owner identifier.
+
+    return_map: bool, optional (default: ``False``)
+        If true, the result includes a map from owners to records and hints.
 
     Returns
     -------
-    tuple (ProbabDist, Channel, pl.LazyFrame)
+    tuple (ProbabDist, Channel) | (ProbabDist, Channel, pl.LazyFrame)
         - The adversary’s revised knowledge after observing the dataset.
         - The slice of the hint channel that matches the adversary’s knowledge.
-        - A Polars ``LazyFrame`` that maps records to hints.
+        - (Optional) A Polars ``LazyFrame`` that maps records to hints.
 
     Examples
     --------
@@ -45,7 +50,7 @@ def build(
     ... })
 
     The adversary's knowledge upon observing this dataset is:
-    >>> pi, ch, _ = model.baseline(dataset, ["hint"])
+    >>> pi, ch = model.baseline(dataset, ["hint"])
     >>> pi
     ProbabDist(dist=array([0.5 , 0.25, 0.25]))
 
@@ -62,13 +67,11 @@ def build(
     # be a special column that identified the owner of that record.
     # =============================================================
     dataset = dataset.lazy()
-    
-    _, ok_owner = _valid_columns(dataset, [owner_col])
-    if not ok_owner:
-       raise ValueError(f"Dataset must have a column ``owner_id``")
-
     schema = dataset.collect_schema()
-    missing_attrs = set(hint_attrs) - set(schema.keys())
+
+    required_attrs = [owner_col, *hint_attrs]
+    missing_attrs = set(required_attrs) - set(schema.keys())
+
     if len(missing_attrs) > 0:
         raise ValueError(f"Missing the following attrs: {missing_attrs}")
 
@@ -99,7 +102,8 @@ def build(
     p_expr = (pl.len() / pl.col("n_records").first()).alias("p")
 
     prior_dist = (
-        map_records_to_hints.drop(owner_col)
+        map_records_to_hints
+        .drop(owner_col)
         .with_columns(n_records_expr)
         .group_by("record")
         .agg(p_expr)
@@ -135,4 +139,4 @@ def build(
     pi = ProbabDist(prior_dist)
     ch = Channel(ch_dist.tocsr())
     
-    return pi, ch, map_records_to_hints
+    return (pi, ch, map_records_to_hints) if return_map else (pi, ch)
