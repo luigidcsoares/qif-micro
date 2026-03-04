@@ -115,6 +115,28 @@ def hyper(pi: ProbabDist, ch: Channel) -> tuple[ProbabDist, Channel]:
     array([[1. , 0.2, 0.2],
            [0. , 0.8, 0. ],
            [0. , 0. , 0.8]])
+
+    It also works if the channel is not sparse:
+    
+    >>> ch = Channel(ch.dist.toarray())
+    >>> outer, posteriors = qif.probab.hyper(pi, ch)
+    >>> outer.dist
+    array([0.0625, 0.625 , 0.3125])
+
+    >>> posteriors.dist.T
+    array([[1. , 0.2, 0.2],
+           [0. , 0.8, 0. ],
+           [0. , 0. , 0.8]])
+
+    This function is overloaded to take a joint instead:
+    >>> outer, posteriors = qif.probab.hyper(qif.probab.joint(pi, ch))
+    >>> outer.dist
+    array([0.0625, 0.625 , 0.3125])
+
+    >>> posteriors.dist.T
+    array([[1. , 0.2, 0.2],
+           [0. , 0.8, 0. ],
+           [0. , 0. , 0.8]])
     """
     return hyper(joint(pi, ch))
 
