@@ -1,9 +1,16 @@
+import numpy as np
 import polars as pl
 
 from scipy.sparse import coo_array
 
+from qif_micro import qif
+from qif_micro.model import baseline
 from qif_micro.qif.datatypes import Channel, ProbabDist
 from qif_micro._internal import _valid_columns
+
+type Dataset = pl.DataFrame | pl.LazyFrame
+type MapOwners = pl.DataFrame | pl.LazyFrame
+type MapLabels = pl.DataFrame | pl.LazyFrame
 
 type ReturnModel = (
     tuple[ProbabDist, Channel]
@@ -12,7 +19,9 @@ type ReturnModel = (
 )
 
 def build(
-    dataset: pl.DataFrame | pl.LazyFrame,
+    dataset: Dataset,
+    orig: Dataset,
+    agg_col: str,
     count_col: str = "count",
     sum_col: str = "sum",
     group_by_col: str | None = None,
@@ -22,29 +31,38 @@ def build(
 ) -> ReturnModel:
     """
     TODO
-    Returns
+
+    Examples
     -------
-    tuple (ProbabDist, Channel) 
-        - The adversary’s revised knowledge after observing the dataset.
-        - The slice of the hint channel that matches the adversary’s knowledge.
+    >>> import polars as pl
+    >>> from qif_micro import model
 
-    tuple (ProbabDist, Channel, pl.LazyFrame) |
-        - The adversary’s revised knowledge after observing the dataset.
-        - The slice of the hint channel that matches the adversary’s knowledge.
-        - If ``map_owners`` enabled: map from owners to row indices;
-          If ``map_labels`` enabled: map from hint labels to indices
+    Consider the following histograms, and one of the original datasets:
 
-    tuple (ProbabDist, Channel, pl.LazyFrame)
-        - (Optional) A Polars ``LazyFrame`` that maps records to hints.
-        - The adversary’s revised knowledge after observing the dataset.
-        - The slice of the hint channel that matches the adversary’s knowledge.
-        - Map from owners to row indices;
-        - Map from hint labels to indices
+    >>> orig = pl.DataFrame({
+    ...     "owner_id": [0, 0, 1, 1, 2, 2, 2, 3, 3, 3, 3],
+    ...     "agg":      [0, 2, 1, 1, 0, 2, 0, 2, 1, 0, 1],
+    ...     "group":    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+    ... })
 
-    
+    >>> dataset = pl.DataFrame({
+    ...     "owner_id": [0, 1, 2, 3, 3],
+    ...     "count":    [2, 2, 3, 3, 1],
+    ...     "sum":      [2, 2, 2, 2, 1],
+    ...     "group":    [0, 0, 0, 0, 1]
+    ... })
+
+    >>> model.count_sum(dataset, orig, "agg", group_by_col="group")
     """
     # =============================================================
-    # Pre-conditions: The dataset must be in "wide" format, where
+    # Pre-conditions
+    # =============================================================
+    dataset = dataset.lazy()
+    orig = orig.lazy()
+
+    filter_optional = lambda xs: [x for x in xs if x is not None]
+
+    # ``dataset```: The dataset must be in "wide" format, where
     # each row corresponds to the entry of one record, each column
     # corresponds to one of the record's attributes, and there must
     # be a special column that identified the owner of that record.
@@ -52,34 +70,134 @@ def build(
     # If ``group_by_col`` is not defined, records must have len one.
     #
     # The type of ``count_col`` and ``sum_col`` must be an integer.
-    # =============================================================
-    dataset = dataset.lazy()
+    prefix_msg = "Dataset :: "
+
     schema = dataset.collect_schema()
-
-    filter_optional = lambda xs: [x for x in xs if x is not None]
-    record_cols = filter_optional([count_col, sum_col, group_by_col])
-
-    required_cols = [owner_col, *record_cols]
+    dataset_cols = filter_optional([count_col, sum_col, group_by_col])
+    
+    required_cols = [owner_col, *dataset_cols]
     missing_cols = set(required_cols) - set(schema.keys())
 
     if len(missing_cols) > 0:
-        raise ValueError(f"Missing the following attrs: {missing_cols}")
+        msg = f"Missing the following attrs: {missing_cols}!"
+        raise ValueError(prefix_msg + msg)
 
-    record_lens = dataset.group_by(owner_col).agg(pl.len())
-    max_record_len = record_lens.select(pl.col("len").max()).collect().item()
+    rlens = dataset.group_by(owner_col).agg(pl.len())
+    max_rlen = rlens.select(pl.col("len").max()).collect().item()
 
-    if (group_by_col is None) and (max_record_len > 1):
-        raise ValueError("Record length must be 1, unless ``group_by_col`` is set`")
+    if (group_by_col is None) and (max_rlen > 1):
+        msg = "Record length must be 1, unless ``group_by_col`` is set`!"
+        raise ValueError(prefix_msg + msg)
 
     if not schema[count_col].is_integer():
-        raise ValueError(f"``count_col`` ({count_col}) must be integer")
+        msg = f"``count_col`` ({count_col}) must be integer!"
+        raise ValueError(prefix_msg + msg)
 
     if not schema[sum_col].is_integer():
-        raise ValueError(f"``sum_col`` ({sum_col}) must be integer")
+        msg = f"``sum_col`` ({sum_col}) must be integer!"
+        raise ValueError(prefix_msg + msg)
+
+    # ``orig``: Must also be in "wide" format, where
+    # each row corresponds to the entry of one record, each column
+    # corresponds to one of the record's attributes, and there must
+    # be a special column that identified the owner of that record.
+    #
+    # ``agg_col`` must be an integer
+    prefix_msg = "Original :: "
+
+    schema = orig.collect_schema()
+    orig_cols = filter_optional([agg_col, group_by_col])
+    
+    required_cols = [owner_col, *orig_cols]
+    missing_cols = set(required_cols) - set(schema.keys())
+
+    if len(missing_cols) > 0:
+        msg = f"Missing the following attrs: {missing_cols}!"
+        raise ValueError(prefix_msg + msg)
+
+    if not schema[agg_col].is_integer():
+        msg = f"``agg_col`` ({agg_col}) must be integer!"
+        raise ValueError(prefix_msg + msg)
 
     # =============================================================
     # End pre-conditions
     # =============================================================
+
+    # We begin by constructing the baseline model. We also request
+    # the map from hint labels to the columns in the baseline.
+    # This gives us only the labels that are possible in practice,
+    # which means that we do not need to construct the whole adv model.
+    pi_orig, ch_orig, map_owners, map_labels = baseline(
+        # Dataset with ``agg_col`` as the hints   
+        orig, [agg_col], owner_col=owner_col,
+        return_owners=True, return_labels=True
+    )
+
+    # Then we need to remap the prior and channel, so that the inputs
+    # are aggregated records, not the detailed records from ``orig``.
+    # 
+    # This can be done by summing over records that map to same agg.
+    # There's no need for normalisation, as the gain fn induces eq classes.
+    sum_expr = pl.col(agg_col).sum().alias(sum_col)
+    count_expr = pl.len().alias(count_col)
+    record_entry_expr = pl.struct(count_col, sum_col).alias("agg_record")
+    record_expr = pl.col("agg_record").rank("dense") - 1
+
+    histogram_cols = filter_optional([owner_col, group_by_col])
+    agg_orig = (
+        orig
+        # Must maintain order through all group_bys, as this is used twice;
+        # otherwise, rank might not be deterministic.
+        .group_by(histogram_cols, maintain_order=True)
+        .agg(count_expr, sum_expr)
+        .group_by(owner_col, maintain_order=True)
+        .agg(record_entry_expr)
+        .with_columns(record_expr)
+    )
+
+    baseline_pi = ProbabDist(
+        map_owners
+        .sort("record")
+        .with_columns(pl.lit(pi_orig.dist).alias("p"))
+        .join(agg_orig, on=owner_col)
+        .group_by("agg_record").agg(pl.col("p").sum())
+        .sort("agg_record")
+        .select("p")
+        .collect()
+        .to_numpy()
+        .ravel()
+    )
+
+    # For the channel, we first construct the joint,
+    # then remap to aggregated records and then back to channel.
+    joint_dist_orig = qif.probab.joint(pi_orig, ch_orig).dist.tocoo()
+    data, rows, cols = joint_dist_orig.data, *joint_dist_orig.coords
+
+    joint_agg_metadata = (
+        pl.LazyFrame({ "record": rows, "hint": cols, "p": data })
+        .join(map_owners, on="record")
+        .join(agg_orig, on=owner_col)
+        .group_by("agg_record", "hint")
+        .agg(pl.col("p").sum(), pl.col("p").alias("ps"), "record")
+        .collect()
+    )
+
+    n_rows = joint_agg_metadata["agg_record"].max() + 1
+    n_cols = joint_agg_metadata["hint"].max() + 1
+
+    data = joint_agg_metadata["p"].to_numpy()
+    rows = joint_agg_metadata["agg_record"].to_numpy()
+    cols = joint_agg_metadata["hint"].to_numpy()
+
+    joint_dist = coo_array((data, (rows, cols)), shape=(n_rows, n_cols))
+    baseline_ch_dist = joint_dist / baseline_pi.dist[:, np.newaxis]
+    baseline_ch = Channel(baseline_ch_dist.tocsr())
+
+    # TODO: now that we have the baseline channel, we can construct
+    # the adversary's strategy but only for a subset of valid hints.
+    return baseline_ch.dist.toarray()
+
+    # FIXME: OLD - BACKUP
 
     # We begin by constructing a map from records to hints,
     # so that each record is identified as a row (of the prior and channel),
