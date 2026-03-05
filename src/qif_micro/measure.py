@@ -1,68 +1,56 @@
-# import polars as pl
+from collections.abc import Sequence
 
-# from qif_micro import qif
-# from qif_micro.datatypes import channel, Channel, LazyChannel
-# from qif_micro.datatypes import joint
-# from qif_micro.datatypes import probab_dist, ProbabDist, LazyProbabDist 
+import numpy as np
+from scipy.sparse import csr_array
 
-# def _strategies(prior: ProbabDist, ch: Channel) -> Channel:
-#     """
-#     Turns out that the set of all strategies can be represented as
-#     a channel mapping each output of the system to a distribution.
-#     We assume strategies are uniform on the support (optimal actions).
+from qif_micro.qif.datatypes import Channel, Joint, ProbabDist
 
-#     Since we are assuming Bayes in general, this channel actually
-#     has the same dimensions than the joint.
-#     """
-#     joint = qif.push(prior, ch)
-
-#     expr_max = pl.col("p").max().over(joint.output).alias("max")
-#     joint_with_max = joint.dist.with_columns(expr_max)
-
-#     expr_mask = (pl.col("p") == pl.col("max")).cast(pl.Float64).alias("p")
-#     joint_masked = joint_with_max.with_columns(expr_mask)
-
-#     expr_cmax = pl.col("p").sum().over(joint.output)
-#     expr_uniform_p = (pl.col("p") / expr_cmax).alias("p")
+def _strategy(belief: ProbabDist | Joint) -> csr_array:
+    dist = (
+        belief.dist if isinstance(belief, Joint)
+        else csr_array(belief.dist[:, np.newaxis])
+    )
     
-#     st_dist = joint_masked.with_columns(*joint.secret, *joint.output, expr_uniform_p)
-#     return channel.make(st_dist, joint.output, joint.secret)
+    rows, cols = dist.nonzero()
+    col_max = dist.max(axis=0).toarray()
+    
+    mask_data = dist[rows, cols] == col_max[cols]
+    mask = csr_array((mask_data, (rows, cols)), shape=dist.shape)
+    max_counts = mask.sum(axis=0)
+
+    st_data = mask_data / max_counts[mask.indices]
+    st_dist = csr_array((st_data, mask.indices, mask.indptr), shape=dist.shape)
+
+    # It could be that the input is a joint with all-zero columns,
+    # in which case there must be a strategy (uniform over all rows):
+    nz_per_col = dist.count_nonzero(axis=0)
+    allzero_cols = np.nonzero(nz_per_col == 0)[0]
+
+    n_allzero = allzero_cols.shape[0]
+    if n_allzero == 0: return st_dist
+
+    st_dist = st_dist.tocoo()
+    st_data = st_dist.data
+    st_rows, st_cols = st_dist.coords
+
+    allzero_data = np.repeat(1 / n_allzero, n_allzero * dist.shape[0])
+    allzero_rows, allzero_cols = zip(*(
+        (r, c) for c in allzero_cols for r in range(dist.shape[0])
+    ))
+
+    st_data = np.concatenate([st_data, allzero_data])
+    st_rows = np.concatenate([st_rows, allzero_rows])
+    st_cols = np.concatenate([st_cols, allzero_cols])
+
+    return coo_array((st_data, (st_rows, st_cols)), shape=dist.shape).tocsr()
 
 
-# def linkage_risk(
-#     prior_adv: ProbabDist | LazyProbabDist,
-#     prior_baseline: ProbabDist | LazyProbabDist,
-#     hint_ch: Channel | LazyChannel
-# ) -> float:
-#     """
-#     Computes the adversary's expected chance of correctly guessing the
-#     secret, by constructing the adversary's strategy conditioned on each
-#     output, and evaluating the performance of each strategy with respect
-#     to the corresponding baseline state of knowledge.
+type MapOwners = pl.DataFrame | pl.LazyFrame
+type MapLabels = pl.DataFrame | pl.LazyFrame
+type Model = tuple[ProbabDist, Channel, MapOwners, MapLabels]
 
-#     TODO: add gain function
-
-#     ## Example
-#     TODO 
-#     """
-#     prior_adv = probab_dist.collect(prior_adv)
-#     prior_baseline = probab_dist.collect(prior_baseline)
-#     hint_ch = channel.collect(hint_ch)
-
-#     baseline = joint.collect(qif.push(prior_baseline, hint_ch))
-#     st = _strategies(prior_adv, hint_ch)
-
-#     # Joint `secret` matches with strategy `output` and vice-versa.
-#     # That is, strategy takes one of the output as input 
-#     # and returns the secret that the adversary will guess
-#     lcols = baseline.secret + baseline.output
-#     rcols = st.output + st.secret
-
-#     return (
-#         baseline.dist
-#         .join(st.dist, left_on=lcols, right_on=rcols)
-#         .with_columns((pl.col("p") * pl.col("p_right")).alias("p"))
-#         .select(pl.col("p").sum().alias("p"))
-#         .collect()
-#         .item()
-#     )
+def linkage_risk(
+    dataset: Model | Sequence[Model],
+    baseline: Model | Sequence[Model] | None = None
+) -> np.floating:
+    pass

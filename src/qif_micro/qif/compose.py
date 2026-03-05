@@ -49,6 +49,7 @@ def _sparse_parallel(lhs: NDArray[np.floating], rhs: NDArray[np.floating]):
     # Also return the column pairs that correspond to each new column
     return ch_dist, sparse_indices[first_pos]
 
+
 type Columns = NDArray[int]
 type ReturnParallel = (
     Channel

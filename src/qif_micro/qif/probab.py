@@ -1,7 +1,7 @@
 import polars as pl
 import numpy as np
 
-from plum import dispatch
+from multimethod import multimethod
 from scipy.sparse import issparse, csr_array
 
 from qif_micro.qif.datatypes import Channel, Joint, ProbabDist
@@ -64,7 +64,7 @@ def joint(pi: ProbabDist,  ch: Channel) -> Joint:
     except Exception as e: assert False, f"Joint build failed: {e!r}"
 
 
-@dispatch
+@multimethod
 def hyper(pi: ProbabDist, ch: Channel) -> tuple[ProbabDist, Channel]:
     """
     Pushes a prior through a channel to compute a hyper-distribution.
@@ -141,7 +141,7 @@ def hyper(pi: ProbabDist, ch: Channel) -> tuple[ProbabDist, Channel]:
     return hyper(joint(pi, ch))
 
 
-@dispatch
+@multimethod
 def hyper(joint: Joint) -> tuple[ProbabDist, Channel]:
     outer_dist = joint.dist.sum(axis=0)
     post_dists = joint.dist / outer_dist

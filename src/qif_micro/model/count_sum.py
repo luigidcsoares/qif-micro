@@ -6,9 +6,9 @@ from qif_micro.qif.datatypes import Channel, ProbabDist
 from qif_micro._internal import _valid_columns
 
 type ReturnModel = (
-    tuple[ProbabDist, Channel] |
-    tuple[ProbabDist, Channel, pl.LazyFrame] |
-    tuple[ProbabDist, Channel, pl.LazyFrame, pl.LazyFrame]
+    tuple[ProbabDist, Channel]
+    | tuple[ProbabDist, Channel, pl.LazyFrame]
+    | tuple[ProbabDist, Channel, pl.LazyFrame, pl.LazyFrame]
 )
 
 def build(
