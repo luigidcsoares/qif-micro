@@ -3,7 +3,6 @@ import numpy as np
 from scipy.sparse import issparse, coo_array, csr_array
 
 from qif_micro.qif.datatypes import Channel
-from qif_micro.qif._utils import _duplicate_indices
 
 def reduced(ch: Channel) -> Channel:
     """
@@ -75,7 +74,7 @@ def reduced(ch: Channel) -> Channel:
         
     # We now have columns that are scalar multiple of each other
     # identified by a unique hash value. Let's find those indices:
-    indices = _duplicate_indices(col_ids)
+    indices = np.unique(col_ids, return_inverse=True)[1]
 
     # Then we create a matrix that, for each column (hash id)
     # has one's at each index (channel col) that has that hash,
