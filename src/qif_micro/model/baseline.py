@@ -355,9 +355,14 @@ def build(
         labels_lhs = with_suffix(labels_lhs, "hint_label", i)
         labels_rhs = with_suffix(labels_rhs, "hint_label", j)
 
-        ch, cols = qif.compose.parallel(ch_lhs, ch_rhs, return_cols=True)
-        cols_lf = pl.LazyFrame({ str(i): cols[:, 0], str(j): cols[:, 1] })
+        ch, cols = qif.compose.parallel(
+            ch_lhs,
+            ch_rhs,
+            n_partitions=n_partitions,
+            return_cols=True
+        )
 
+        cols_lf = pl.LazyFrame({ str(i): cols[:, 0], str(j): cols[:, 1] })
         map_labels = (
             cols_lf
             .with_row_index()
