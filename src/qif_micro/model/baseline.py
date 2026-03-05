@@ -37,16 +37,13 @@ def _mk_long_dataset(
     )
 
 
-def _mk_long_prior(
-    long_dataset : Dataset,
-    owner_col: str = "owner_id"
-) -> ProbabDist:
+def _mk_long_prior(long_dataset : Dataset) -> ProbabDist:
     n_records_expr = pl.len().alias("n_records")
     p_expr = (pl.len() / pl.col("n_records").first()).alias("p")
 
     prior_dist = (
-        long_dataset.lazy()
-        .drop(owner_col)
+        long_dataset
+        .lazy()
         .with_columns(n_records_expr) # Should be the same as before
         .group_by("record")
         .agg(p_expr)
@@ -203,8 +200,9 @@ def build(
     # =============================================================
 
     # We begin by building the prior for the (possibly longitudinal) dataset:
-    long_dataset = _mk_long_dataset([_mk_records(dataset)], owner_col)
-    pi = _mk_long_prior(long_dataset, owner_col)
+    records = _mk_records(dataset, owner_col)
+    long_dataset = _mk_long_dataset([records], owner_col)
+    pi = _mk_long_prior(long_dataset.drop(owner_col))
 
     # Then we build a map from owners to records to hints,
     # so that each record is identified as a row (of the prior and channel),
@@ -324,7 +322,7 @@ def build(
     # We begin by building the prior for the (possibly longitudinal) dataset:
     records_it = (_mk_records(d, owner_col) for d in datasets)
     long_dataset = _mk_long_dataset(records_it, owner_col)
-    pi = _mk_long_prior(long_dataset, owner_col)
+    pi = _mk_long_prior(long_dataset.drop(owner_col))
 
     # Now, for each dataset we compute the channel and get the map_labels.
     # We also need to augment the individual datasets so that we get
