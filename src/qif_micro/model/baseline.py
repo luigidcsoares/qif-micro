@@ -147,9 +147,9 @@ def build(
 
     >>> ch.dist.toarray()
     array([[0. , 1. , 0. ],
-           [0. , 1. , 0. ],
+           [1. , 0. , 0. ],
            [0. , 0.5, 0.5],
-           [1. , 0. , 0. ]])
+           [0. , 0.5, 0.5]])
 
     We can get the map from owners to record ids (rows):
     >>> m = model.baseline(datasets, ["hint"], return_owners=True)[2]
@@ -327,16 +327,31 @@ def build(
     # Now, for each dataset we compute the channel and get the map_labels.
     # We also need to augment the individual datasets so that we get
     # the longitudinal records and get channel rows properly aligned.
-    # For that, we just join the dataset with long_dataset to get the
-    # id of the longitudinal record (row in the channel).
-    build_model = lambda dataset: build(
-        dataset.join(long_dataset, on=owner_col),
-        hint_attrs, owner_col, n_partitions,
-        return_labels=True, return_owners=True
-    ) 
+    def _build_model(dataset):
+        _, ch, map_owners, map_labels =  build(
+            dataset, hint_attrs, owner_col, n_partitions,
+            return_labels=True, return_owners=True
+        ) 
 
-    models_it = (build_model(d) for d in datasets)
-    _, ch_seq, map_owners_seq, map_labels_seq = zip(*models_it)
+        reindex = (
+            map_owners
+            .rename({"record": "row"})
+            .join(long_dataset, on=owner_col)
+            .drop(owner_col)
+            .unique()
+            .sort("record")
+            .select("row")
+            .collect()
+            .to_numpy()
+            .ravel()
+        )
+
+        ch_dist = ch.dist[reindex, :]
+        return Channel(ch_dist), map_labels
+        
+
+    models_it = (_build_model(d) for d in datasets)
+    ch_seq, map_labels_seq = zip(*models_it)
     
     # With the channel seq and the output labels, we proceed as follows.
     # 
@@ -382,10 +397,11 @@ def build(
         (ch_seq[0], map_labels_seq[0])
     )
 
-    # Map owners in this case is the same for any individual model:
     hint_label_expr = pl.concat_list(pl.exclude("hint")).alias("hint_label")
-    map_owners = map_owners_seq[0]
     map_labels = map_labels.select(hint_label_expr, "hint")
+
+    # Map owners is just our long_dataset
+    map_owners = long_dataset
 
     if return_owners and return_labels: return pi, ch, map_owners, map_labels
     if return_owners: return pi, ch, map_owners
