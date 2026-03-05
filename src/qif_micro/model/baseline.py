@@ -112,7 +112,7 @@ def build(
         - The slice of the hint channel that matches the adversary’s knowledge;
         - Map from owners to row indices;
         - Map from hint labels to indices.
-.
+
     Examples
     --------
     >>> import polars as pl
@@ -332,7 +332,7 @@ def build(
     # For that, we just join the dataset with long_dataset to get the
     # id of the longitudinal record (row in the channel).
     build_model = lambda dataset: build(
-        dataset.join(long_dataset, on="owner_id"),
+        dataset.join(long_dataset, on=owner_col),
         hint_attrs, owner_col, n_partitions,
         return_labels=True, return_owners=True
     ) 
@@ -389,5 +389,3 @@ def build(
     if return_labels: return pi, ch, map_labels
 
     return pi, ch
-
-
