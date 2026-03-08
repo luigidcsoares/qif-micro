@@ -1,7 +1,12 @@
 from collections.abc import Iterable
+from typing import Any
 
 import polars as pl
 
+def _filter_optional(xs: Iterable[Any]) -> Iterable[Any]:
+    return (x for x in xs if x is not None)
+
+    
 def _prepare_records(lf: pl.DataFrame | pl.LazyFrame) -> pl.LazyFrame:
     # ==================================================
     # Pre-conditions: record column must either be

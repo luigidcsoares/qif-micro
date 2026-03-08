@@ -4,7 +4,12 @@ import numpy as np
 from multimethod import multimethod
 from scipy.sparse import issparse, csr_array
 
-from qif_micro.qif.datatypes import Channel, Joint, ProbabDist
+from qif_micro.qif.datatypes import (
+    Channel,
+    Joint,
+    ProbabDist,
+    Strategy
+)
 
 def joint(pi: ProbabDist,  ch: Channel) -> Joint:
     """
@@ -39,7 +44,7 @@ def joint(pi: ProbabDist,  ch: Channel) -> Joint:
     ...     [0,     0,   1]  # Third row
     ... ]))
     
-    >>> joint = qif.probab.joint(pi, ch)
+    >>> joint = qif.joint(pi, ch)
     >>> joint
     Joint(dist=<Compressed Sparse Row sparse array of dtype 'float64'
         with 5 stored elements and shape (3, 3)>)
@@ -51,7 +56,7 @@ def joint(pi: ProbabDist,  ch: Channel) -> Joint:
 
     It also works if the channel is not sparse:
     >>> ch = Channel(ch.dist.toarray())
-    >>> qif.probab.joint(pi, ch).dist
+    >>> qif.joint(pi, ch).dist
     array([[0.0625, 0.125 , 0.0625],
            [0.    , 0.5   , 0.    ],
            [0.    , 0.    , 0.25  ]])
@@ -107,7 +112,7 @@ def hyper(pi: ProbabDist, ch: Channel) -> tuple[ProbabDist, Channel]:
     ...     [0,     0,   1]  # Third row
     ... ]))
 
-    >>> outer, posteriors = qif.probab.hyper(pi, ch)
+    >>> outer, posteriors = qif.hyper(pi, ch)
     >>> outer.dist
     array([0.0625, 0.625 , 0.3125])
 
@@ -119,7 +124,7 @@ def hyper(pi: ProbabDist, ch: Channel) -> tuple[ProbabDist, Channel]:
     It also works if the channel is not sparse:
     
     >>> ch = Channel(ch.dist.toarray())
-    >>> outer, posteriors = qif.probab.hyper(pi, ch)
+    >>> outer, posteriors = qif.hyper(pi, ch)
     >>> outer.dist
     array([0.0625, 0.625 , 0.3125])
 
@@ -129,7 +134,7 @@ def hyper(pi: ProbabDist, ch: Channel) -> tuple[ProbabDist, Channel]:
            [0. , 0. , 0.8]])
 
     This function is overloaded to take a joint instead:
-    >>> outer, posteriors = qif.probab.hyper(qif.probab.joint(pi, ch))
+    >>> outer, posteriors = qif.hyper(qif.joint(pi, ch))
     >>> outer.dist
     array([0.0625, 0.625 , 0.3125])
 
@@ -147,3 +152,52 @@ def hyper(joint: Joint) -> tuple[ProbabDist, Channel]:
     post_dists = joint.dist / outer_dist
     post_dists = post_dists.tocsr() if issparse(joint.dist) else post_dists
     return ProbabDist(outer_dist), Channel(post_dists.T)
+
+
+@multimethod
+def strategy(belief: Joint) -> Strategy:
+    """
+    TODO
+    """
+    dist = belief.dist
+    rows, cols = dist.nonzero()
+    col_max = dist.max(axis=0).toarray()
+    
+    mask_data = dist[rows, cols] == col_max[cols]
+    mask = csr_array((mask_data, (rows, cols)), shape=dist.shape)
+    max_counts = mask.sum(axis=0)
+
+    st_data = mask_data / max_counts[mask.indices]
+    st_dist = csr_array((st_data, mask.indices, mask.indptr), shape=dist.shape)
+
+    return Channel(st_dist.T)
+    # FIXME: Keeping as backup. I do not really remember how this could happen.
+    # 
+    # It could be that the input is a joint with all-zero columns,
+    # in which case there must be a strategy (uniform over all rows):
+    # nz_per_col = dist.count_nonzero(axis=0)
+    # allzero_cols = np.nonzero(nz_per_col == 0)[0]
+
+    # n_allzero = allzero_cols.shape[0]
+    # if n_allzero == 0: return Channel(st_dist.T)
+
+    # st_dist = st_dist.tocoo()
+    # st_data = st_dist.data
+    # st_rows, st_cols = st_dist.coords
+
+    # allzero_data = np.repeat(1 / n_allzero, n_allzero * dist.shape[0])
+    # allzero_rows, allzero_cols = zip(*(
+    #     (r, c) for c in allzero_cols for r in range(dist.shape[0])
+    # ))
+
+    # st_data = np.concatenate([st_data, allzero_data])
+    # st_rows = np.concatenate([st_rows, allzero_rows])
+    # st_cols = np.concatenate([st_cols, allzero_cols])
+
+    # st_dist = coo_array((st_data, (st_rows, st_cols)), shape=dist.shape)
+    # return Channel(st_dist.tocsr().T)
+
+
+@multimethod
+def strategy(belief: ProbabDist) -> Strategy:
+    return strategy(Joint(belief.dist[:, np.newaxis]))

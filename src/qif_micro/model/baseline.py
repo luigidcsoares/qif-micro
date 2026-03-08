@@ -8,34 +8,10 @@ from scipy.sparse import coo_array
 
 from qif_micro import qif
 from qif_micro.qif.datatypes import Channel, ProbabDist
-from qif_micro._internal import _valid_columns
 
-type Dataset = pl.DataFrame | pl.LazyFrame
-type MapOwners = pl.DataFrame | pl.LazyFrame
-type MapLabels = pl.DataFrame | pl.LazyFrame
-
-def _mk_records(dataset: Dataset, owner_col: str = "owner_id") -> Dataset:
-    record_entry_expr = pl.struct(pl.exclude(owner_col)).alias("record")
-    return dataset.group_by(owner_col).agg(record_entry_expr)
-
-
-def _mk_long_dataset(
-    map_owners: Iterable[MapOwners],
-    owner_col: str = "owner_id"
-) -> Dataset:
-    # First we construct the new the longitudinal records
-    record_idx_expr = lambda i: pl.struct("record", pl.lit(i).alias("i")).alias("record")
-    monthly_records = (m.select(owner_col, record_idx_expr(i)) for i, m in enumerate(map_owners))
-
-    record_expr = pl.col("record").rank("dense") - 1
-    return (
-        pl.concat(monthly_records)
-        # The longitudinal record will be a sequence of record ids
-        .group_by(owner_col).agg("record")
-        # Which we then transform in a single id (row)
-        .with_columns(record_expr)
-    )
-
+from qif_micro.model.datatypes import Dataset, MapLabels, MapOwners
+from qif_micro.model._internal import _mk_long_dataset, _mk_records
+from qif_micro._utils import _valid_columns
 
 def _mk_long_prior(long_dataset : Dataset) -> ProbabDist:
     n_records_expr = pl.len().alias("n_records")
@@ -69,6 +45,7 @@ def build(
     hint_attrs: Iterable[str],
     owner_col: str = "owner_id",
     n_partitions: int | Iterable[int] = 1,
+    opt_memory: bool = True,
     return_owners: bool = False,
     return_labels: bool = False
 ) -> ReturnModel:
@@ -85,6 +62,9 @@ def build(
 
     owner_col : str, optional (default: ``"owner_id"``)
         Column name for the owner identifier.
+
+    opt_memory : bool, optional (default: ``True``)
+        See the doc of ``qif.compose.parallel``
 
     return_owners : bool, optional (default: ``False``)
         If true, the result includes a map from owners to row_indices.
@@ -218,7 +198,8 @@ def build(
     records_and_hints = (
         dataset
         .select(owner_col, record_entry_expr, hint_label_expr)
-        .group_by(owner_col)
+        # Ensure order, so that rank is deterministic.
+        .group_by(owner_col, maintain_order=True)
         .agg("record_entry", "hint_label", len_expr)
         .select(owner_col, record_expr, "hint_label", "len")
     )
@@ -238,13 +219,11 @@ def build(
         .group_by("record", "hint_label")
         .agg(p_expr)
 
-        # Transform the hint labels into col indices,
-        # and sort so we can construct the channel matrix:
+        # Transform the hint labels into col indices:
         .with_columns(hint_expr)
-        .sort("record", "hint")
     )
 
-    ch_dist_df =  ch_metadata.select("record", "hint", "p").collect()
+    ch_dist_df = ch_metadata.select("record", "hint", "p").collect()
 
     n_rows = ch_dist_df["record"].max() + 1
     n_cols = ch_dist_df["hint"].max() + 1
@@ -273,6 +252,7 @@ def build(
     hint_attrs: Iterable[str],
     owner_col: str = "owner_id",
     n_partitions: int | Iterable[int] = 1,
+    opt_memory: bool = True,
     return_owners: bool = False,
     return_labels: bool = False
 ) -> ReturnModel:
@@ -292,6 +272,7 @@ def build(
         hint_attrs,
         owner_col,
         n_partitions,
+        opt_memory,
         return_owners,
         return_labels
     )
@@ -374,6 +355,7 @@ def build(
             ch_lhs,
             ch_rhs,
             n_partitions=n_partitions,
+            opt_memory=opt_memory,
             return_cols=True
         )
 
