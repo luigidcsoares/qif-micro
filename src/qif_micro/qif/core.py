@@ -22,7 +22,6 @@ def joint(pi: ProbabDist,  ch: Channel) -> Joint:
 
     ch : Channel
         Stochastic channel (matrix) mapping secrets to observable outputs.
-        The channel may be sparse or dense.
 
     Returns
     -------
@@ -76,20 +75,22 @@ def hyper(pi: ProbabDist, ch: Channel) -> tuple[ProbabDist, Channel]:
 
     Parameters
     ----------
-    This function is overloaded as follows:
+    The function is overloaded:
 
-    Overload 1
-    ^^^^^^^^^^
+    - ``hyper(pi, ch)``: accepts a :class:`ProbabDist` and a :class:`Channel`.
+    - ``hyper(joint)``:  accepts a pre‑computed :class:`Joint` object.
+
     pi : ProbabDist
         Prior probability distribution over the secret space.
+        (First overload)
 
     ch : Channel
         Stochastic channel (matrix) that maps secrets to observable outputs.
+        (First overload)
 
-    Overload 2
-    ^^^^^^^^^^
     joint : Joint
         Joint distribution between secrets and observable outputs.
+        (Second overload)
 
     Returns
     -------
@@ -159,11 +160,83 @@ def hyper(joint: Joint) -> tuple[ProbabDist, Channel]:
 
 
 @multimethod
-def strategy(belief: Joint) -> Strategy:
+def strategy(pi: ProbabDist) -> Strategy:
     """
-    TODO
+    Constructs the adversary's strategy according to their belief
+    about how secret values are distributed.
+
+    Parameters
+    ----------
+    This function is overloaded:
+
+    - ``strategy(pi)``: accepts a :class:`ProbabDist`
+    - ``strategy(pi, ch)``: accepts a :class:`ProbabDist` and a :class:`Channel`
+    - ``strategy(joint)``: accepts a :class:`Joint`
+
+    pi : ProbabDist
+        The adversary's belief about how secrets are distributed.
+        (First and second overloads)
+
+    ch : Channel
+        Stochastic channel (matrix) mapping secrets to observable outputs.
+        (Second overload)
+
+    joint: Joint
+        The adversary's belief about how secrets are correlated with
+        the outputs of a system. In this case, the adversary constructs
+        one strategy for each possible output that they could observe.
+        (Third overload)
+
+    Returns
+    -------
+    Strategy
+        A stochastic matrix where each row corresponds to one strategy.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from scipy.sparse import csr_array
+    >>> from qif_micro import qif
+    >>> from qif_micro.qif.datatypes import Channel, ProbabDist
+
+    Given the following prior knowledge, the adversary's strategy a priori
+    (assuming the identity gain function) is to guess the second secret:
+    
+    >>> pi = ProbabDist(np.array([1/4, 1/2, 1/4]))
+    >>> qif.strategy(pi).dist.toarray()
+    array([[0., 1., 0.]])
+
+    A strategy could also be probabilistic:
+
+    >>> pi = ProbabDist(np.array([2/5, 1/5, 2/5]))
+    >>> qif.strategy(pi).dist.toarray()
+    array([[0.5, 0. , 0.5]])
+
+    After observing the output of a channel, the adv updates their strategy:
+    
+    >>> ch = Channel(csr_array([
+    ...     [1/4, 1/2, 1/4], # First row
+    ...     [0,     1,   0], # Second row
+    ...     [0,     0,   1]  # Third row
+    ... ]))
+
+    >>> qif.strategy(pi, ch).dist.toarray()
+    array([[1. , 0. , 0. ],
+           [0.5, 0.5, 0. ],
+           [0. , 0. , 1. ]])
     """
-    dist = belief.dist
+    return strategy(Joint(pi.dist[:, np.newaxis]))
+
+
+@multimethod
+def strategy(pi: ProbabDist, ch: Channel) -> Strategy:
+    return strategy(joint(pi, ch))
+
+
+@multimethod
+def strategy(joint: Joint) -> Strategy:
+    dist = joint.dist if issparse(joint.dist) else csr_array(joint.dist)
+
     rows, cols = dist.nonzero()
     col_max = dist.max(axis=0).toarray()
     
@@ -200,8 +273,3 @@ def strategy(belief: Joint) -> Strategy:
 
     # st_dist = coo_array((st_data, (st_rows, st_cols)), shape=dist.shape)
     # return Channel(st_dist.tocsr().T)
-
-
-@multimethod
-def strategy(belief: ProbabDist) -> Strategy:
-    return strategy(Joint(belief.dist[:, np.newaxis]))
