@@ -9,10 +9,10 @@ from scipy.sparse import coo_array
 from scipy.special import gammaln
 
 from qif_micro import qif
-from qif_micro.qif.datatypes import Channel, ProbabDist, Strategy
+from qif_micro.qif.datatypes import Channel, Joint, ProbabDist, Strategy
 
 from qif_micro.model import baseline
-from qif_micro.model.datatypes import Dataset, MapLabels, MapOwners
+from qif_micro.model.typing import Dataset, Model
 from qif_micro.model._internal import _mk_long_dataset, _mk_records
 from qif_micro._utils import _valid_columns, _filter_optional
 
@@ -53,14 +53,11 @@ def _validate_dataset(
     # The type of ``count_col`` and ``sum_col`` must be an integer.
     prefix_msg = "Dataset :: "
 
-    schema = dataset.collect_schema()
     dataset_cols = _filter_optional([count_col, sum_col, group_by_col])
+    ok, missing = _valid_columns(dataset, [owner_col, *dataset_cols])
 
-    required_cols = [owner_col, *dataset_cols]
-    missing_cols = set(required_cols) - set(schema.keys())
-
-    if len(missing_cols) > 0:
-        msg = f"Missing the following attrs: {missing_cols}!"
+    if not ok:
+        msg = f"Missing the following attributes: {missing}!"
         raise ValueError(prefix_msg + msg)
 
     rlens = dataset.group_by(owner_col).agg(pl.len())
@@ -70,6 +67,7 @@ def _validate_dataset(
         msg = "Record length must be 1, unless ``group_by_col`` is set`!"
         raise ValueError(prefix_msg + msg)
 
+    schema = dataset.collect_schema()
     if not schema[count_col].is_integer():
         msg = f"``count_col`` ({count_col}) must be integer!"
         raise ValueError(prefix_msg + msg)
@@ -93,31 +91,22 @@ def _validate_orig(
     # ``agg_col`` must be an integer
     prefix_msg = "Original :: "
 
-    schema = dataset.collect_schema()
     orig_cols = _filter_optional([agg_col, group_by_col])
+    ok, missing = _valid_columns(dataset, [owner_col, *orig_cols])
 
-    required_cols = [owner_col, *orig_cols]
-    missing_cols = set(required_cols) - set(schema.keys())
-
-    if len(missing_cols) > 0:
-        msg = f"Missing the following attrs: {missing_cols}!"
+    if not ok:
+        msg = f"Missing the following attributes: {missing}!"
         raise ValueError(prefix_msg + msg)
 
+    schema = dataset.collect_schema()
     if not schema[agg_col].is_integer():
         msg = f"``agg_col`` ({agg_col}) must be integer!"
         raise ValueError(prefix_msg + msg)
 
 
-type ReturnModel = (
-    tuple[ProbabDist, Channel, Strategy]
-    | tuple[ProbabDist, Channel, Strategy, MapOwners | MapLabels]
-    | tuple[ProbabDist, Channel, Strategy, MapOwners, MapLabels]
-)
-
 @multimethod
 def build(
     datasets: Sequence[Dataset],
-    origs: Sequence[Dataset],
     agg_col: str,
     count_col: str = "count",
     sum_col: str = "sum",
@@ -125,10 +114,18 @@ def build(
     owner_col: str = "owner_id",
     return_owners: bool = False,
     return_labels: bool = False
-) -> ReturnModel:
+) -> Model:
     """
-    TODO
+    Build the adversary's strategies given the result of a query of the form
 
+    .. code-block:: sql
+        SELECT count(*) as count_col, sum(agg_col) as sum_col
+        FROM datasets
+        GROUP_BY owner_col, group_by_col
+
+    We only return the adversary's strategies with respect to the outputs that
+    are possible in practice, considering the original datasets.
+    
     Examples
     -------
     >>> import polars as pl
@@ -136,110 +133,177 @@ def build(
 
     Consider the following histograms, and one of the original datasets:
 
-    >>> orig = pl.DataFrame({
+    >>> dataset = pl.DataFrame({
     ...     "owner_id": [0, 0, 1, 1, 2, 2, 2, 3, 3, 3, 3],
     ...     "agg":      [0, 2, 1, 1, 0, 2, 0, 2, 1, 0, 1],
     ...     "group":    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
     ... })
 
-    >>> dataset = pl.DataFrame({
-    ...     "owner_id": [0, 1, 2, 3, 3],
-    ...     "count":    [2, 2, 3, 3, 1],
-    ...     "sum":      [2, 2, 2, 2, 1],
+    >>> baseline_joint, adv_st = model.count_sum(
+    ...     dataset, "agg", group_by_col="group"
+    ... )
+
+    >>> baseline_joint.dist.toarray()
+    array([[0.125     , 0.25      , 0.        , 0.125     ],
+       [0.16666667, 0.        , 0.        , 0.08333333],
+       [0.0625    , 0.0625    , 0.0625    , 0.0625    ]])
+
+    >>> adv_st.dist.toarray()
+    array([[1., 0., 0.],
+           [1., 0., 0.],
+           [0., 0., 1.],
+           [1., 0., 0.]])
+
+    We can also construct a longitudinal model. Consider a second dataset
+    (with the restriction that ``agg_col`` and ``group_col`` must be the same):
+
+    >>> dataset_rhs = pl.DataFrame({
+    ...     "owner_id": [0, 1, 1, 2, 3],
+    ...     "agg":      [5, 5, 3, 0, 0],
     ...     "group":    [0, 0, 0, 0, 1]
     ... })
 
-    >>> pi, baseline_ch, adv_st = model.count_sum(
-    ...     dataset, orig, "agg", group_by_col="group"
+    >>> datasets = [dataset, dataset_rhs]
+    >>> baseline_joint, adv_st = model.count_sum(
+    ...     datasets, "agg", group_by_col="group"
     ... )
-    >>> pi.dist
 
-    >>> baseline_ch.dist.toarray()
+    >>> baseline_joint.dist.toarray()
+    array([[0.        , 0.        , 0.125     , 0.        , 0.        ,
+            0.        , 0.        , 0.        , 0.        , 0.125     ],
+           [0.        , 0.        , 0.        , 0.        , 0.125     ,
+            0.125     , 0.        , 0.        , 0.        , 0.        ],
+           [0.16666667, 0.        , 0.        , 0.        , 0.        ,
+            0.        , 0.        , 0.08333333, 0.        , 0.        ],
+           [0.        , 0.0625    , 0.        , 0.0625    , 0.        ,
+            0.        , 0.0625    , 0.        , 0.0625    , 0.        ]])
 
-    >>> adv_st
+    >>> adv_st.dist.toarray()
+    array([[0., 0., 1., 0.],
+           [0., 0., 0., 1.],
+           [1., 0., 0., 0.],
+           [0., 0., 0., 1.],
+           [0., 1., 0., 0.],
+           [0., 1., 0., 0.],
+           [0., 0., 0., 1.],
+           [0., 0., 1., 0.],
+           [0., 0., 0., 1.],
+           [1., 0., 0., 0.]])
+
+    We can get the map from owners to record ids (rows):
+
+    >>> m = model.count_sum(
+    ...    datasets, "agg", group_by_col="group", return_owners=True
+    ... )[2]
+    >>> m.sort("owner_id").collect()
+    shape: (4, 2)
+    ┌──────────┬────────┐
+    │ owner_id ┆ record │
+    │ ---      ┆ ---    │
+    │ i64      ┆ u32    │
+    ╞══════════╪════════╡
+    │ 0        ┆ 0      │
+    │ 1        ┆ 2      │
+    │ 2        ┆ 1      │
+    │ 3        ┆ 3      │
+    └──────────┴────────┘
+
+    And the map from hint labels to the corresponding cols in the channel:
+    
+    >>> m = model.count_sum(
+    ...    datasets, "agg", group_by_col="group", return_labels=True
+    ... )[2]
+    >>> m.sort("hint_label").collect()
+    shape: (10, 2)
+    ┌─────────────────┬──────┐
+    │ hint_label      ┆ hint │
+    │ ---             ┆ ---  │
+    │ list[struct[2]] ┆ u32  │
+    ╞═════════════════╪══════╡
+    │ [{0,0}, {0,0}]  ┆ 0    │
+    │ [{0,0}, {0,1}]  ┆ 1    │
+    │ [{0,0}, {5,0}]  ┆ 2    │
+    │ [{1,0}, {0,1}]  ┆ 3    │
+    │ [{1,0}, {3,0}]  ┆ 4    │
+    │ [{1,0}, {5,0}]  ┆ 5    │
+    │ [{1,1}, {0,1}]  ┆ 6    │
+    │ [{2,0}, {0,0}]  ┆ 7    │
+    │ [{2,0}, {0,1}]  ┆ 8    │
+    │ [{2,0}, {5,0}]  ┆ 9    │
+    └─────────────────┴──────┘
     """
     # =============================================================
-    # Pre-conditions
+    # Pre-conditions: The dataset must be in "wide" format, where
+    # each row corresponds to the entry of one record, each column
+    # corresponds to one of the record's attributes, and there must
+    # be a special column that identified the owner of that record.
+    #
+    # If more than one dataset, they must contain the same owners.
     # =============================================================
+    if len(datasets) == 0: raise ValueError("Empty sequence of datasets!")
+
     datasets = [d.lazy() for d in datasets]
-    origs = [d.lazy() for d in origs]
 
-    # Confirm that there's an orig dataset for each dataset the adv observed:
-    if len(datasets) != len(origs):
-        raise ValueError("Mismatch between ``datasets`` and ``origs`` lenghts")
+    owners_expr = pl.col(owner_col).unique()
+    owners = set(datasets[0].select(owners_expr).collect().to_series())
 
-    for d in datasets:
-        _validate_dataset(d, count_col, sum_col, group_by_col, owner_col)
+    for i, dataset in enumerate(datasets):
+        orig_cols = _filter_optional([agg_col, group_by_col])
+        ok, missing = _valid_columns(dataset, [owner_col, *orig_cols])
 
-    for d in origs:
-         _validate_orig(d, agg_col, group_by_col, owner_col)
+        if not ok:
+            msg = f"Missing the following attributes: {missing}!"
+            raise ValueError(prefix_msg + msg)
 
-    # Owners must be the same across all datasets:
-    base_owners = _get_owners(datasets[0])
-    owners = reduce(
-        lambda acc, d: _get_owners(d, owner_col) & acc,
-        datasets[1:] + origs,
-        base_owners
-    )
+        schema = dataset.collect_schema()
+        if not schema[agg_col].is_integer():
+            msg = f"``agg_col`` ({agg_col}) must be integer!"
+            raise ValueError(prefix_msg + msg)
 
-    if owners != base_owners:
-        raise ValueError("``datasets + ``origs`` must have the same owners!")
-
-    # And aggregated records in ``datasets`` and ``origs`` must be the same:
-    sort_cols = _filter_optional([owner_col, group_by_col, count_col, sum_col])
-    agg_entries_seq = list(
-        d.sort(sort_cols).pipe(_mk_records, owner_col)
-        for d in datasets
-    )
-
-    long_agg_dataset = (
-        _mk_long_dataset((agg_entries_seq), owner_col)
-        .rename({"record": "agg_record"})
-    )
-
-    long_agg_orig = _mk_long_dataset((
-        _mk_agg_entries(d, agg_col, count_col, sum_col, group_by_col, owner_col)
-        .sort(sort_cols)
-        .pipe(_mk_records, owner_col)
-        for d in origs
-    ), owner_col).rename({"record": "agg_record"})
-
-    is_eq = (
-        long_agg_dataset
-        .join(long_agg_orig, on=owner_col)
-        .select((pl.col("agg_record") == pl.col("agg_record_right")).all())
-        .collect()
-        .item()
-    )
-
-    if not is_eq: raise ValueError("``datasets`` incompatible with ``origs``!")
+        owners_i = set(dataset.select(owners_expr).collect().to_series())
+        if owners_i != owners:
+            raise ValueError("All datasets must have the same owners!")
 
     # =============================================================
     # End pre-conditions
     # =============================================================
-
+    
     # We begin by constructing the baseline model. We also request
     # the map from hint labels to the columns in the baseline.
     # This gives us only the labels that are possible in practice,
     # which means that we do not need to construct the whole adv model.
-    pi_orig, ch_orig, map_owners, map_labels = baseline(
+    joint_orig, map_owners, map_labels = baseline(
         # Dataset with ``agg_col`` as the hints   
-        origs, list(_filter_optional([agg_col, group_by_col])),
+        datasets, list(_filter_optional([agg_col, group_by_col])),
         owner_col=owner_col, return_owners=True, return_labels=True,
         # We disable opt_memory, so that we keep labels around for aligning.
         opt_memory=False
     )
 
-    # Then we need to remap the prior and channel, so that the inputs
+    # Then we need to remap the prior and joint, so that the inputs
     # are aggregated records, not the detailed records from ``orig``.
     # 
     # This can be done by summing over records that map to same agg.
     # There's no need for normalisation, as the gain fn induces eq classes.
+    sort_cols = _filter_optional([owner_col, group_by_col, count_col, sum_col])
+    agg_entries_seq = [
+        _mk_agg_entries(d, agg_col, count_col, sum_col, group_by_col, owner_col)
+        .sort(sort_cols)
+        .pipe(_mk_records, owner_col)
+        for d in datasets
+    ]
+
+    long_agg_dataset = (
+        _mk_long_dataset(agg_entries_seq, owner_col)
+        .rename({"record": "agg_record"})
+    )
+    
+    pi_orig_dist = joint_orig.dist.sum(axis=1)
     pi_agg = ProbabDist(
         map_owners
         .sort("record")
-        .with_columns(pl.lit(pi_orig.dist).alias("p"))
-        .join(long_agg_orig, on=owner_col)
+        .with_columns(pl.lit(pi_orig_dist).alias("p"))
+        .join(long_agg_dataset, on=owner_col)
         .group_by("agg_record").agg(pl.col("p").sum())
         .sort("agg_record")
         .select("p")
@@ -248,15 +312,14 @@ def build(
         .ravel()
     )
 
-    # For the channel, we first construct the joint,
-    # then remap to aggregated records and then back to channel.
-    joint_dist_orig = qif.joint(pi_orig, ch_orig).dist.tocoo()
-    data, rows, cols = joint_dist_orig.data, *joint_dist_orig.coords
+    joint_orig_dist = joint_orig.dist.tocoo()
+    data = joint_orig_dist.data
+    rows, cols = joint_orig_dist.coords
 
     joint_agg_metadata = (
         pl.LazyFrame({ "record": rows, "hint": cols, "p": data })
         .join(map_owners, on="record")
-        .join(long_agg_orig, on=owner_col)
+        .join(long_agg_dataset, on=owner_col)
         .group_by("agg_record", "hint")
         .agg(pl.col("p").sum())
         .collect()
@@ -269,17 +332,16 @@ def build(
     rows = joint_agg_metadata["agg_record"].to_numpy()
     cols = joint_agg_metadata["hint"].to_numpy()
 
-    joint_dist = coo_array((data, (rows, cols)), shape=(n_rows, n_cols))
-    baseline_ch_dist = joint_dist / pi_agg.dist[:, np.newaxis]
-    baseline_ch = Channel(baseline_ch_dist.tocsr())
+    joint_agg_dist = coo_array((data, (rows, cols)), shape=(n_rows, n_cols))
+    baseline_joint = Joint(joint_agg_dist.tocsr())
 
-    # Now that we have the baseline channel, we can construct
+    # Now that we have the baseline joint, we can construct
     # the adversary's strategy but only for a subset of valid hints.
     #
     # We first collect the valid columns (non-zero cells)
     # for each row (aggregated record) in the baseline.
-    indices = baseline_ch.dist.indices
-    sections = baseline_ch.dist.indptr[1:-1]
+    indices = baseline_joint.dist.indices
+    sections = baseline_joint.dist.indptr[1:-1]
     valid_cols = np.split(indices, sections)
 
     # Then we construct the metadata for the hint channnel:
@@ -307,7 +369,7 @@ def build(
 
     def _with_count_sum(ch_metadata, i):
         agg_entries = agg_entries_seq[i].explode("record").unnest("record")
-        pred_owner = pl.col(owner_col) == pl.col(owner_col + "_right")
+
         pred_group = pl.lit(True) if group_by_col is None else (
             pl.col("hint_label").list.get(i).struct.field(group_by_col)
             == pl.col(group_by_col)
@@ -321,8 +383,9 @@ def build(
 
         return (
             ch_metadata
-            .join_where(agg_entries, pred_owner, pred_group)
-            .select("agg_record", "hint", "hint_label", agg_expr)
+            .join(agg_entries, on=owner_col)
+            .filter(pred_group)
+            .select(owner_col, "agg_record", "hint", "hint_label", agg_expr)
         )
 
 
@@ -406,18 +469,17 @@ def build(
     # Both map_owners and map_labels should be the same as for the baseline,
     # and the prior is also the same.
     if return_owners and return_labels:
-        return pi_agg, baseline_ch, adv_st, map_owners, map_labels
+        return baseline_joint, adv_st, map_owners, map_labels
 
-    if return_owners: return pi_agg, baseline_ch, adv_st, map_owners
-    if return_labels: return pi_agg, baseline_ch, adv_st, map_labels
+    if return_owners: return baseline_joint, adv_st, map_owners
+    if return_labels: return baseline_joint, adv_st, map_labels
 
-    return pi_agg, baseline_ch, adv_st
+    return baseline_joint, adv_st
 
 
 @multimethod
 def build(
     dataset: Dataset,
-    orig: Dataset,
     agg_col: str,
     count_col: str = "count",
     sum_col: str = "sum",
@@ -425,9 +487,9 @@ def build(
     owner_col: str = "owner_id",
     return_owners: bool = False,
     return_labels: bool = False
-) -> ReturnModel:
+) -> Model:
     return build(
-        [dataset], [orig],
+        [dataset],
         agg_col, count_col, sum_col, group_by_col, owner_col,
         return_owners, return_labels
     )

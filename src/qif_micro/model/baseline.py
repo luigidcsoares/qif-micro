@@ -1,6 +1,7 @@
 from collections.abc import Iterable, Sequence
 from functools import reduce
 
+import numpy as np
 import polars as pl
 
 from multimethod import multimethod
@@ -9,7 +10,7 @@ from scipy.sparse import coo_array
 from qif_micro import qif
 from qif_micro.qif.datatypes import Channel, ProbabDist
 
-from qif_micro.model.datatypes import Dataset, MapLabels, MapOwners
+from qif_micro.model.typing import BaselineModel, Dataset
 from qif_micro.model._internal import _mk_long_dataset, _mk_records
 from qif_micro._utils import _valid_columns
 
@@ -33,22 +34,16 @@ def _mk_long_prior(long_dataset : Dataset) -> ProbabDist:
     return ProbabDist(prior_dist)
 
 
-type ReturnModel = (
-    tuple[ProbabDist, Channel]
-    | tuple[ProbabDist, Channel, MapOwners | MapLabels]
-    | tuple[ProbabDist, Channel, MapOwners, MapLabels]
-)
-
 @multimethod
 def build(
-    dataset: Dataset,
+    datasets: Sequence[Dataset],
     hint_attrs: Iterable[str],
     owner_col: str = "owner_id",
     n_partitions: int | Iterable[int] = 1,
     opt_memory: bool = True,
     return_owners: bool = False,
     return_labels: bool = False
-) -> ReturnModel:
+) -> BaselineModel:
     """
     Build the adversary’s knowledge model from a dataset and auxiliary info.
 
@@ -74,19 +69,16 @@ def build(
 
     Returns
     -------
-    tuple (ProbabDist, Channel) 
-        - The adversary’s revised knowledge after observing the dataset;
-        - The slice of the hint channel that matches the adversary’s knowledge.
+    Joint
+        The adversary’s revised joint knowledge after observing the dataset.
 
-    tuple (ProbabDist, Channel, MapOwners | MapLabels)
-        - The adversary’s revised knowledge after observing the dataset;
-        - The slice of the hint channel that matches the adversary’s knowledge;
+    tuple (Joint, MapOwners | MapLabels)
+        - The adversary’s revised joint knowledge after observing the dataset;
         - If ``map_owners`` enabled: map from owners to row indices OR
           If ``map_labels`` enabled: map from hint labels to indices.
 
-    tuple (ProbabDist, Channel, MapOwners, MapLabels)
-        - The adversary’s revised knowledge after observing the dataset;
-        - The slice of the hint channel that matches the adversary’s knowledge;
+    tuple (Joint, MapOwners, MapLabels)
+        - The adversary’s revised joint knowledge after observing the dataset;
         - Map from owners to row indices;
         - Map from hint labels to indices.
 
@@ -102,18 +94,15 @@ def build(
     ...     "sensitive": [0, 0, 0, 0, 1, 1]
     ... })
 
-    The adversary's knowledge upon observing this dataset is:
-    >>> pi, ch = model.baseline(dataset, ["hint"])
-    >>> pi
-    ProbabDist(dist=array([0.5 , 0.25, 0.25]))
-
-    And the channel modelling the adversary's auxiliary info is:
-    >>> ch.dist.toarray()
-    array([[1. , 0. ],
-           [0.5, 0.5],
-           [0.5, 0.5]])
+    The adversary's joint knowledge upon observing this dataset is:
+    >>> joint = model.baseline(dataset, ["hint"])
+    >>> joint.dist.toarray()
+    array([[0.5  , 0.   ],
+           [0.125, 0.125],
+           [0.125, 0.125]])
 
     We can also construct a longitudinal model. Consider a second dataset:
+
     >>> dataset_rhs = pl.DataFrame({
     ...     "owner_id":  [0, 1, 2, 3],
     ...     "hint":      [0, 1, 0, 0],
@@ -121,18 +110,16 @@ def build(
     ... })
 
     >>> datasets = [dataset, dataset_rhs]
-    >>> pi, ch = model.baseline(datasets, ["hint"])
-    >>> pi
-    ProbabDist(dist=array([0.25, 0.25, 0.25, 0.25]))
-
-    >>> ch.dist.toarray()
-    array([[0. , 1. , 0. ],
-           [1. , 0. , 0. ],
-           [0. , 0.5, 0.5],
-           [0. , 0.5, 0.5]])
+    >>> joint = model.baseline(datasets, ["hint"])
+    >>> joint.dist.toarray()
+    array([[0.   , 0.25 , 0.   ],
+           [0.25 , 0.   , 0.   ],
+           [0.   , 0.125, 0.125],
+           [0.   , 0.125, 0.125]])
 
     We can get the map from owners to record ids (rows):
-    >>> m = model.baseline(datasets, ["hint"], return_owners=True)[2]
+
+    >>> m = model.baseline(datasets, ["hint"], return_owners=True)[1]
     >>> m.sort("owner_id").collect()
     shape: (4, 2)
     ┌──────────┬────────┐
@@ -147,7 +134,8 @@ def build(
     └──────────┴────────┘
 
     And the map from hint labels to the corresponding cols in the channel:
-    >>> m = model.baseline(datasets, ["hint"], return_labels=True)[2]
+
+    >>> m = model.baseline(datasets, ["hint"], return_labels=True)[1]
     >>> m.sort("hint_label").collect()
     shape: (3, 2)
     ┌─────────────────┬──────┐
@@ -160,102 +148,6 @@ def build(
     │ [{1}, {0}]      ┆ 2    │
     └─────────────────┴──────┘
     """
-    # =============================================================
-    # Pre-conditions: The dataset must be in "wide" format, where
-    # each row corresponds to the entry of one record, each column
-    # corresponds to one of the record's attributes, and there must
-    # be a special column that identified the owner of that record.
-    # =============================================================
-    dataset = dataset.lazy()
-    schema = dataset.collect_schema()
-
-    required_attrs = [owner_col, *hint_attrs]
-    missing_attrs = set(required_attrs) - set(schema.keys())
-
-    if len(missing_attrs) > 0:
-        raise ValueError(f"Dataset missing the following attrs: {missing_attrs}")
-
-    # =============================================================
-    # End pre-conditions
-    # =============================================================
-
-    # We begin by building the prior for the (possibly longitudinal) dataset:
-    records = _mk_records(dataset, owner_col)
-    long_dataset = _mk_long_dataset([records], owner_col)
-    pi = _mk_long_prior(long_dataset.drop(owner_col))
-
-    # Then we build a map from owners to records to hints,
-    # so that each record is identified as a row (of the prior and channel),
-    # and each hint is identified as a column (of the channel).
-    # 
-    # We also add the record length as a metadata.
-    len_expr = pl.len().alias("len")
-    hint_label_expr = pl.struct(hint_attrs).alias("hint_label")
-    record_entry_expr = pl.struct(pl.exclude(owner_col)).alias("record_entry")
-    record_expr = pl.col("record_entry").rank("dense").alias("record") - 1
-
-    record_attrs = [c for c in schema.keys() if c != owner_col]
-    records_and_hints = (
-        dataset
-        .select(owner_col, record_entry_expr, hint_label_expr)
-        # Ensure order, so that rank is deterministic.
-        .group_by(owner_col, maintain_order=True)
-        .agg("record_entry", "hint_label", len_expr)
-        .select(owner_col, record_expr, "hint_label", "len")
-    )
-
-    p_expr = (pl.len() / pl.col("len").first()).alias("p")
-    hint_expr = pl.col("hint_label").rank("dense").alias("hint") - 1
-
-    ch_metadata = (
-        records_and_hints
-        .drop(owner_col)
-        # Drop possible duplicate records from the dataset,
-        # as in the case of the channel we count things within records
-        .unique()
-        .explode("hint_label")
-
-        # Then, we compute the probability of each cell in the channel,
-        .group_by("record", "hint_label")
-        .agg(p_expr)
-
-        # Transform the hint labels into col indices:
-        .with_columns(hint_expr)
-    )
-
-    ch_dist_df = ch_metadata.select("record", "hint", "p").collect()
-
-    n_rows = ch_dist_df["record"].max() + 1
-    n_cols = ch_dist_df["hint"].max() + 1
-
-    data = ch_dist_df["p"].to_numpy()
-    rows = ch_dist_df["record"].to_numpy()
-    cols = ch_dist_df["hint"].to_numpy()
-
-    ch_dist = coo_array((data, (rows, cols)), shape=(n_rows, n_cols))
-
-    ch = Channel(ch_dist.tocsr())
-    
-    map_owners = records_and_hints.select(owner_col, "record")
-    map_labels = ch_metadata.select("hint_label", "hint").unique()
-
-    if return_owners and return_labels: return pi, ch, map_owners, map_labels
-    if return_owners: return pi, ch, map_owners
-    if return_labels: return pi, ch, map_labels
-
-    return pi, ch
-
-
-@multimethod
-def build(
-    datasets: Sequence[Dataset],
-    hint_attrs: Iterable[str],
-    owner_col: str = "owner_id",
-    n_partitions: int | Iterable[int] = 1,
-    opt_memory: bool = True,
-    return_owners: bool = False,
-    return_labels: bool = False
-) -> ReturnModel:
     # =============================================================
     # Pre-conditions: The dataset must be in "wide" format, where
     # each row corresponds to the entry of one record, each column
@@ -284,15 +176,13 @@ def build(
     owners = set(datasets[0].select(owners_expr).collect().to_series())
 
     for i, dataset in enumerate(datasets):
-        schema = dataset.collect_schema()
+        required = [owner_col, *hint_attrs]
+        ok, missing = _valid_columns(dataset, required)
 
-        required_attrs = [owner_col, *hint_attrs]
-        missing_attrs = set(required_attrs) - set(schema.keys())
+        if not ok:
+            raise ValueError(f"{i}-th dataset missing attributes: {missing}")
 
-        if len(missing_attrs) > 0:
-            raise ValueError(f"{i}-th dataset missing the following attrs: {missing_attrs}")
-
-        owners_i = set(datasets[i].select(owners_expr).collect().to_series())
+        owners_i = set(dataset.select(owners_expr).collect().to_series())
         if owners_i != owners:
             raise ValueError("All datasets must have the same owners!")
 
@@ -309,7 +199,7 @@ def build(
     # We also need to augment the individual datasets so that we get
     # the longitudinal records and get channel rows properly aligned.
     def _build_model(dataset):
-        _, ch, map_owners, map_labels =  build(
+        joint, map_owners, map_labels =  build(
             dataset, hint_attrs, owner_col, n_partitions,
             return_labels=True, return_owners=True
         ) 
@@ -327,8 +217,10 @@ def build(
             .ravel()
         )
 
-        ch_dist = ch.dist[reindex, :]
-        return Channel(ch_dist), map_labels
+        prior_dist = joint.dist.sum(axis=1)
+        ch_dist = joint.dist / prior_dist[:, np.newaxis]
+
+        return Channel(ch_dist[reindex, :].tocsr()), map_labels
         
 
     models_it = (_build_model(d) for d in datasets)
@@ -382,11 +274,106 @@ def build(
     hint_label_expr = pl.concat_list(pl.exclude("hint")).alias("hint_label")
     map_labels = map_labels.select(hint_label_expr, "hint")
 
-    # Map owners is just our long_dataset
-    map_owners = long_dataset
+    joint = qif.joint(pi, ch)
+    map_owners = long_dataset # Map owners is just our long_dataset
 
-    if return_owners and return_labels: return pi, ch, map_owners, map_labels
-    if return_owners: return pi, ch, map_owners
-    if return_labels: return pi, ch, map_labels
+    if return_owners and return_labels: return joint, map_owners, map_labels
+    if return_owners: return joint, map_owners
+    if return_labels: return joint, map_labels
 
-    return pi, ch
+    return joint
+
+
+@multimethod
+def build(
+    dataset: Dataset,
+    hint_attrs: Iterable[str],
+    owner_col: str = "owner_id",
+    n_partitions: int | Iterable[int] = 1,
+    opt_memory: bool = True,
+    return_owners: bool = False,
+    return_labels: bool = False
+) -> BaselineModel:
+    # =============================================================
+    # Pre-conditions: The dataset must be in "wide" format, where
+    # each row corresponds to the entry of one record, each column
+    # corresponds to one of the record's attributes, and there must
+    # be a special column that identified the owner of that record.
+    # =============================================================
+    dataset = dataset.lazy()
+
+    required = [owner_col, *hint_attrs]
+    ok, missing = _valid_columns(dataset, required)
+
+    if not ok: raise ValueError(f"Dataset missing attributes: {missing}")
+
+    # =============================================================
+    # End pre-conditions
+    # =============================================================
+
+    # We begin by building the prior for the (possibly longitudinal) dataset:
+    records = _mk_records(dataset, owner_col)
+    long_dataset = _mk_long_dataset([records], owner_col)
+    pi = _mk_long_prior(long_dataset.drop(owner_col))
+
+    # Then we build a map from owners to records to hints,
+    # so that each record is identified as a row (of the prior and channel),
+    # and each hint is identified as a column (of the channel).
+    # 
+    # We also add the record length as a metadata.
+    len_expr = pl.len().alias("len")
+    hint_label_expr = pl.struct(hint_attrs).alias("hint_label")
+    record_entry_expr = pl.struct(pl.exclude(owner_col)).alias("record_entry")
+    record_expr = pl.col("record_entry").rank("dense").alias("record") - 1
+
+    cols = dataset.collect_schema().names()
+    record_attrs = [c for c in cols if c != owner_col]
+    records_and_hints = (
+        dataset
+        .select(owner_col, record_entry_expr, hint_label_expr)
+        # Ensure order, so that rank is deterministic.
+        .group_by(owner_col, maintain_order=True)
+        .agg("record_entry", "hint_label", len_expr)
+        .select(owner_col, record_expr, "hint_label", "len")
+    )
+
+    p_expr = (pl.len() / pl.col("len").first()).alias("p")
+    hint_expr = pl.col("hint_label").rank("dense").alias("hint") - 1
+
+    ch_metadata = (
+        records_and_hints
+        .drop(owner_col)
+        # Drop possible duplicate records from the dataset,
+        # as in the case of the channel we count things within records
+        .unique()
+        .explode("hint_label")
+
+        # Then, we compute the probability of each cell in the channel,
+        .group_by("record", "hint_label")
+        .agg(p_expr)
+
+        # Transform the hint labels into col indices:
+        .with_columns(hint_expr)
+    )
+
+    ch_dist_df = ch_metadata.select("record", "hint", "p").collect()
+
+    n_rows = ch_dist_df["record"].max() + 1
+    n_cols = ch_dist_df["hint"].max() + 1
+
+    data = ch_dist_df["p"].to_numpy()
+    rows = ch_dist_df["record"].to_numpy()
+    cols = ch_dist_df["hint"].to_numpy()
+
+    ch_dist = coo_array((data, (rows, cols)), shape=(n_rows, n_cols))
+    ch = Channel(ch_dist.tocsr())
+    
+    joint = qif.joint(pi, ch)
+    map_owners = records_and_hints.select(owner_col, "record")
+    map_labels = ch_metadata.select("hint_label", "hint").unique()
+
+    if return_owners and return_labels: return joint, map_owners, map_labels
+    if return_owners: return joint, map_owners
+    if return_labels: return joint, map_labels
+
+    return joint
