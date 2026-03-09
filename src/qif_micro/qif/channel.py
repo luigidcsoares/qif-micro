@@ -25,11 +25,6 @@ def reduced(ch: Channel) -> Channel:
         A new channel whose columns have been reduced while preserving the
         original probabilistic semantics.
 
-    Warning
-    -------
-    For channels with many columns, this may be expensive, both in terms
-    of execution time and (most importantly) space.
-
     Examples
     --------
     >>> from scipy.sparse import csr_array
