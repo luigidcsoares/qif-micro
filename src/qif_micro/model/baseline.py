@@ -37,7 +37,7 @@ def _mk_long_prior(long_dataset : Dataset) -> ProbabDist:
 @multimethod
 def build(
     datasets: Sequence[Dataset],
-    hint_attrs: Iterable[str],
+    hint: str | Iterable[str],
     owner_col: str = "owner_id",
     n_partitions: int | Iterable[int] = 1,
     opt_memory: bool = True,
@@ -49,11 +49,21 @@ def build(
 
     Parameters
     ----------
+    This function is overloaded:
+
+    - ``build(dataset, ...)``: accepts a single :class:`Dataset`
+    - ``build([d0, d1, ...], ...): accepts a sequence of :class:`Dataset`
+    
     dataset : Dataset
         A dataset containing owners, hints and sensitive attributes.
+        (First overload)
 
-    hint_attrs : iterable of str
-        Attributes that represent the adversary’s auxiliary information.
+    datasets : Sequence[Dataset]
+        A dataset containing owners, hints and sensitive attributes.
+        (Second overload)
+
+    hint : str | iterable of str
+        Column names that represent the adversary’s auxiliary information.
 
     owner_col : str, optional (default: ``"owner_id"``)
         Column name for the owner identifier.
@@ -95,7 +105,7 @@ def build(
     ... })
 
     The adversary's joint knowledge upon observing this dataset is:
-    >>> joint = model.baseline(dataset, ["hint"])
+    >>> joint = model.baseline(dataset, "hint")
     >>> joint.dist.toarray()
     array([[0.5  , 0.   ],
            [0.125, 0.125],
@@ -110,7 +120,7 @@ def build(
     ... })
 
     >>> datasets = [dataset, dataset_rhs]
-    >>> joint = model.baseline(datasets, ["hint"])
+    >>> joint = model.baseline(datasets, "hint")
     >>> joint.dist.toarray()
     array([[0.   , 0.25 , 0.   ],
            [0.25 , 0.   , 0.   ],
@@ -119,7 +129,7 @@ def build(
 
     We can get the map from owners to record ids (rows):
 
-    >>> m = model.baseline(datasets, ["hint"], return_owners=True)[1]
+    >>> m = model.baseline(datasets, "hint", return_owners=True)[1]
     >>> m.sort("owner_id").collect()
     shape: (4, 2)
     ┌──────────┬────────┐
@@ -135,7 +145,7 @@ def build(
 
     And the map from hint labels to the corresponding cols in the channel:
 
-    >>> m = model.baseline(datasets, ["hint"], return_labels=True)[1]
+    >>> m = model.baseline(datasets, "hint", return_labels=True)[1]
     >>> m.sort("hint_label").collect()
     shape: (3, 2)
     ┌─────────────────┬──────┐
@@ -161,13 +171,16 @@ def build(
     # If only one dataset, dispatch to build(dataset, ...):
     if len(datasets) == 1: return build(
         datasets[0],
-        hint_attrs,
+        hint,
         owner_col,
         n_partitions,
         opt_memory,
         return_owners,
         return_labels
     )
+
+    # Standardise ``hint`` input
+    hint = [hint] if isinstance(hint, str) else hint
 
     # More than one dataset, so we must check owners:
     datasets = [d.lazy() for d in datasets]
@@ -176,7 +189,7 @@ def build(
     owners = set(datasets[0].select(owners_expr).collect().to_series())
 
     for i, dataset in enumerate(datasets):
-        required = [owner_col, *hint_attrs]
+        required = [owner_col, *hint]
         ok, missing = _valid_columns(dataset, required)
 
         if not ok:
@@ -200,7 +213,7 @@ def build(
     # the longitudinal records and get channel rows properly aligned.
     def _build_model(dataset):
         joint, map_owners, map_labels =  build(
-            dataset, hint_attrs, owner_col, n_partitions,
+            dataset, hint, owner_col, n_partitions,
             return_labels=True, return_owners=True
         ) 
 
@@ -287,7 +300,7 @@ def build(
 @multimethod
 def build(
     dataset: Dataset,
-    hint_attrs: Iterable[str],
+    hint: Iterable[str],
     owner_col: str = "owner_id",
     n_partitions: int | Iterable[int] = 1,
     opt_memory: bool = True,
@@ -302,7 +315,10 @@ def build(
     # =============================================================
     dataset = dataset.lazy()
 
-    required = [owner_col, *hint_attrs]
+    # Standardise ``hint`` input
+    hint = [hint] if isinstance(hint, str) else hint
+
+    required = [owner_col, *hint]
     ok, missing = _valid_columns(dataset, required)
 
     if not ok: raise ValueError(f"Dataset missing attributes: {missing}")
@@ -322,7 +338,7 @@ def build(
     # 
     # We also add the record length as a metadata.
     len_expr = pl.len().alias("len")
-    hint_label_expr = pl.struct(hint_attrs).alias("hint_label")
+    hint_label_expr = pl.struct(hint).alias("hint_label")
     record_entry_expr = pl.struct(pl.exclude(owner_col)).alias("record_entry")
     record_expr = pl.col("record_entry").rank("dense").alias("record") - 1
 

@@ -125,6 +125,65 @@ def build(
 
     We only return the adversary's strategies with respect to the outputs that
     are possible in practice, considering the original datasets.
+
+    This function assumes that the adversary's prior knowledge on records
+    (and consequently on datasets) is uniform.
+
+    Parameters
+    ----------
+    This function is overloaded:
+
+    - ``build(dataset, ...)``: accepts a single :class:`Dataset`
+    - ``build([d0, d1, ...], ...)``: accepts a sequence of :class:`Dataset`
+
+    dataset : Dataset
+        A dataset containing owners, hints and sensitive attributes.
+        (First overload)
+
+    datasets : Sequence[Dataset]
+        A dataset containing owners, hints and sensitive attributes.
+        (Second overload)
+
+    agg_col : str
+        Column name used in the sum aggregation (must be an integer).
+        
+    count_col : str, optional (default: ``"count"``)
+        Column name used as alias for the result of the count aggregation.
+
+    sum_col : str, optional (default: ``"sum"``)
+        Column name used as alias for the result of the sum aggregation.
+
+    group_by_col : str | None, optional (default: None)
+        Column name used in the group-by operation.
+        
+    owner_col : str, optional (default: ``"owner_id"``)
+        Column name for the owner identifier.
+
+    return_owners : bool, optional (default: ``False``)
+        If true, the result includes a map from owners to row_indices.
+
+    return_labels : bool, optional (default: ``False``)
+        If true, the result includes a map from hint labels to column indices.
+
+    Returns
+    -------
+    Joint
+        The baseline joint knowledge.
+
+    Strategy
+        The adversary's strategies for each valid output (given the baseline).
+
+    tuple (Joint, Strategy, MapOwners | MapLabels)
+        - The baseline joint knowledge;
+        - The adversary's strategies for each valid output (given the baseline);
+        - If ``map_owners`` enabled: map from owners to row indices OR
+          If ``map_labels`` enabled: map from hint labels to indices.
+
+    tuple (Joint, MapOwners, MapLabels)
+        - The baseline joint knowledge;
+        - The adversary's strategies for each valid output (given the baseline);
+        - Map from owners to row indices;
+        - Map from hint labels to indices.
     
     Examples
     -------

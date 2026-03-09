@@ -74,18 +74,22 @@ def hyper(pi: ProbabDist, ch: Channel) -> tuple[ProbabDist, Channel]:
     """
     Pushes a prior through a channel to compute a hyper-distribution.
 
-    The function is overloaded:
-
-    - ``hyper(pi, ch)`` – accepts a :class:`ProbabDist` and a :class:`Channel`.
-    - ``hyper(joint)`` – accepts a pre‑computed :class:`Joint` object.
-
     Parameters
     ----------
+    This function is overloaded as follows:
+
+    Overload 1
+    ^^^^^^^^^^
     pi : ProbabDist
         Prior probability distribution over the secret space.
 
     ch : Channel
         Stochastic channel (matrix) that maps secrets to observable outputs.
+
+    Overload 2
+    ^^^^^^^^^^
+    joint : Joint
+        Joint distribution between secrets and observable outputs.
 
     Returns
     -------
