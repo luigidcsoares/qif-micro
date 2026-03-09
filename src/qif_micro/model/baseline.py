@@ -233,9 +233,9 @@ def build(
         )
 
         prior_dist = joint.dist.sum(axis=1)
-        ch_dist = joint.dist / prior_dist[:, np.newaxis]
+        ch_dist = (joint.dist / prior_dist[:, np.newaxis]).tocsr()
 
-        return Channel(ch_dist[reindex, :].tocsr()), map_labels
+        return Channel(ch_dist[reindex, :]), map_labels
         
 
     models_it = (_build_model(d) for d in datasets)
