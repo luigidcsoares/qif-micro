@@ -1,56 +1,79 @@
-from collections.abc import Sequence
-
 import numpy as np
-from scipy.sparse import csr_array
 
-from qif_micro.qif.datatypes import Channel, Joint, ProbabDist
+from multimethod import multimethod
 
-def _strategy(belief: ProbabDist | Joint) -> csr_array:
-    dist = (
-        belief.dist if isinstance(belief, Joint)
-        else csr_array(belief.dist[:, np.newaxis])
-    )
+from qif_micro import qif
+from qif_micro.qif.datatypes import Joint
+
+from qif_micro.model.typing import BaselineModel, Model
+
+@multimethod
+def linkage_risk(adv_model: BaselineModel) -> np.floating:
+    """
+    Measures the risk with respect to a linkage attack where an adversary
+    combines some auxiliary information (obtained via external sources)
+    with the dataset released via a privacy-preserving pipeline,
+    and tries to infer some sensitive information about a target.
     
-    rows, cols = dist.nonzero()
-    col_max = dist.max(axis=0).toarray()
+    Parameters
+    ----------
+    This function is overloaded:
+
+    adv_model : BaselineModel
+        The result of :func:`qif_micro.model.baseline.build`, which assumes
+        an adversary who observed the real (de-identified) dataset.
+
+    adv_model : Model
+        All other models produced with :mod:`qif_micro.model`, which assumes
+        an adversary who observed the result of post-processing a dataset.
     
-    mask_data = dist[rows, cols] == col_max[cols]
-    mask = csr_array((mask_data, (rows, cols)), shape=dist.shape)
-    max_counts = mask.sum(axis=0)
+    Examples
+    --------
+    >>> import polars as pl
+    >>> from qif_micro import measure
+    >>> from qif_micro import model
 
-    st_data = mask_data / max_counts[mask.indices]
-    st_dist = csr_array((st_data, mask.indices, mask.indptr), shape=dist.shape)
+    Consider the following dataset:
 
-    # It could be that the input is a joint with all-zero columns,
-    # in which case there must be a strategy (uniform over all rows):
-    nz_per_col = dist.count_nonzero(axis=0)
-    allzero_cols = np.nonzero(nz_per_col == 0)[0]
+    >>> dataset = pl.DataFrame({
+    ...     "owner_id": [0, 0, 1, 1, 2, 2, 2, 3, 3, 3, 3],
+    ...     "agg":      [0, 2, 1, 1, 0, 2, 0, 2, 1, 0, 1],
+    ...     "group":    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+    ... })
 
-    n_allzero = allzero_cols.shape[0]
-    if n_allzero == 0: return st_dist
+    We can compute the threat of an adversary who observes the real data.
+    Assuming that the goal of the adversary is to recover the entire record
+    of a target (chosen at random), we get that the adversary's probability
+    of making a correct inference is approximately 60%:
 
-    st_dist = st_dist.tocoo()
-    st_data = st_dist.data
-    st_rows, st_cols = st_dist.coords
+    >>> adv_model = model.baseline(dataset, ["agg", "group"])
+    >>> measure.linkage_risk(adv_model)
+    np.float64(0.6041666666666666)
 
-    allzero_data = np.repeat(1 / n_allzero, n_allzero * dist.shape[0])
-    allzero_rows, allzero_cols = zip(*(
-        (r, c) for c in allzero_cols for r in range(dist.shape[0])
-    ))
+    Now, consider an adversary who observes the result of the a query
 
-    st_data = np.concatenate([st_data, allzero_data])
-    st_rows = np.concatenate([st_rows, allzero_rows])
-    st_cols = np.concatenate([st_cols, allzero_cols])
+    .. code-block:: sql
+        SELECT count(*) as count, sum(agg_col) as sum
+        FROM dataset
+        GROUP_BY owner_id, group
 
-    return coo_array((st_data, (st_rows, st_cols)), shape=dist.shape).tocsr()
+    and whose goal is to infer the target's aggregated record.
+    The chance that this adversary makes a correct inference is approx 56%:
+
+    >>> adv_model = model.count_sum(dataset, "agg", group_by_col="group")
+    >>> measure.linkage_risk(adv_model)
+    np.float64(0.5625)
+    """
+    # TODO: Consider other gain functions.
+    #       This requires support for gain fn in the qif lib.
+    joint = adv_model if isinstance(adv_model, Joint) else adv_model[:1]
+    return qif.measure.bayes.posterior(joint)
 
 
-type MapOwners = pl.DataFrame | pl.LazyFrame
-type MapLabels = pl.DataFrame | pl.LazyFrame
-type Model = tuple[ProbabDist, Channel, MapOwners, MapLabels]
-
-def linkage_risk(
-    dataset: Model | Sequence[Model],
-    baseline: Model | Sequence[Model] | None = None
-) -> np.floating:
-    pass
+@multimethod
+def linkage_risk(adv_model: Model) -> np.floating:
+    # TODO: Consider other gain functions.
+    #       This requires support for gain fn in the qif lib.
+    baseline_joint, adv_st = adv_model[:2]
+    expected_gain = baseline_joint.dist
+    return (expected_gain * adv_st.dist.T).sum()

@@ -1,11 +1,22 @@
 import numpy as np
 
+from multimethod import multimethod
+
 from qif_micro import qif
-from qif_micro.qif.datatypes import ProbabDist, Channel
+from qif_micro.qif.datatypes import Channel, Joint, ProbabDist
 
 def prior(pi: ProbabDist) -> np.floating:
     """
-    The prior bayes vulnerability is just the maximum prior probability. 
+    The prior Bayes vulnerability is just the maximum prior probability. 
+
+    Parameters
+    ----------
+    pi : ProbabDist
+        The adversary's prior knowledge on secrets.
+
+    Returns
+    -------
+    np.floating
 
     Examples
     --------
@@ -20,10 +31,34 @@ def prior(pi: ProbabDist) -> np.floating:
     return pi.dist.max()
 
 
+@multimethod
 def posterior(pi: ProbabDist, ch: Channel) -> np.floating:
     """
     The expected posterior Bayes vulnerability is computed as
     the sum of the column maxima in the joint distribution.
+
+    Parameters
+    ----------
+    This function is overloaded:
+
+    - ``posterior(pi, ch)``: accepts a :class:`ProbabDist` and a :class:`Channel`
+    - ``posterior(joint)``: accepts a :class:`Joint`
+
+    pi : ProbabDist
+        The adversary's prior knowledge on secrets.
+        (First overload)
+
+    ch : Channel
+        Stochastic channel (matrix) mapping secrets to observable outputs.
+        (First overload)
+
+    joint : Joint
+        Joint distribution between secrets and observable outputs.
+        (Second overload)
+
+    Returns
+    -------
+    np.floating
 
     Examples
     --------
@@ -43,4 +78,9 @@ def posterior(pi: ProbabDist, ch: Channel) -> np.floating:
     >>> bayes.posterior(pi, ch)
     np.float64(0.8125)
     """
-    return qif.joint(pi, ch).dist.max(axis=0).sum()
+    return posterior(qif.joint(pi, ch))
+
+
+@multimethod
+def posterior(joint: Joint) -> np.floating:
+    return joint.dist.max(axis=0).sum()

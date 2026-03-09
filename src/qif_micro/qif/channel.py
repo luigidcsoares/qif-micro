@@ -17,7 +17,7 @@ def reduced(ch: Channel) -> Channel:
     Parameters
     ----------
     channel : Channel
-        The input channel.
+        Stochastic channel (matrix) mapping secrets to observable outputs.
 
     Returns
     -------

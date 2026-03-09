@@ -16,12 +16,6 @@ from qif_micro.model.typing import Dataset, Model
 from qif_micro.model._internal import _mk_long_dataset, _mk_records
 from qif_micro._utils import _valid_columns, _filter_optional
 
-
-def _get_owners(dataset : Dataset, owner_col: str = "owner_id"):
-    owners_expr = pl.col(owner_col).unique()
-    return set(dataset.select(owners_expr).collect().to_series())
-
-
 def _mk_agg_entries(
     dataset: Dataset,
     agg_col: str,
@@ -34,74 +28,6 @@ def _mk_agg_entries(
     count_expr = pl.len().alias(count_col)
     histogram_cols = _filter_optional([owner_col, group_by_col])
     return  dataset.group_by(histogram_cols).agg(count_expr, sum_expr)
-
-
-def _validate_dataset(
-    dataset: Dataset,
-    count_col: str = "count",
-    sum_col: str = "sum",
-    group_by_col: str | None = None,
-    owner_col: str = "owner_id"
-):
-    # ``dataset```: The dataset must be in "wide" format, where
-    # each row corresponds to the entry of one record, each column
-    # corresponds to one of the record's attributes, and there must
-    # be a special column that identified the owner of that record.
-    #
-    # If ``group_by_col`` is not defined, records must have len one.
-    #
-    # The type of ``count_col`` and ``sum_col`` must be an integer.
-    prefix_msg = "Dataset :: "
-
-    dataset_cols = _filter_optional([count_col, sum_col, group_by_col])
-    ok, missing = _valid_columns(dataset, [owner_col, *dataset_cols])
-
-    if not ok:
-        msg = f"Missing the following attributes: {missing}!"
-        raise ValueError(prefix_msg + msg)
-
-    rlens = dataset.group_by(owner_col).agg(pl.len())
-    max_rlen = rlens.select(pl.col("len").max()).collect().item()
-
-    if (group_by_col is None) and (max_rlen > 1):
-        msg = "Record length must be 1, unless ``group_by_col`` is set`!"
-        raise ValueError(prefix_msg + msg)
-
-    schema = dataset.collect_schema()
-    if not schema[count_col].is_integer():
-        msg = f"``count_col`` ({count_col}) must be integer!"
-        raise ValueError(prefix_msg + msg)
-
-    if not schema[sum_col].is_integer():
-        msg = f"``sum_col`` ({sum_col}) must be integer!"
-        raise ValueError(prefix_msg + msg)
-
-
-def _validate_orig(
-   dataset: Dataset,
-   agg_col: str,
-   group_by_col: str | None = None,
-   owner_col: str = "owner_id"
-):
-    # ``dataset``: Must be in "wide" format, where
-    # each row corresponds to the entry of one record, each column
-    # corresponds to one of the record's attributes, and there must
-    # be a special column that identified the owner of that record.
-    #
-    # ``agg_col`` must be an integer
-    prefix_msg = "Original :: "
-
-    orig_cols = _filter_optional([agg_col, group_by_col])
-    ok, missing = _valid_columns(dataset, [owner_col, *orig_cols])
-
-    if not ok:
-        msg = f"Missing the following attributes: {missing}!"
-        raise ValueError(prefix_msg + msg)
-
-    schema = dataset.collect_schema()
-    if not schema[agg_col].is_integer():
-        msg = f"``agg_col`` ({agg_col}) must be integer!"
-        raise ValueError(prefix_msg + msg)
 
 
 @multimethod

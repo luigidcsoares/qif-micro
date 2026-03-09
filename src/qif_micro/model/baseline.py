@@ -97,7 +97,8 @@ def build(
     >>> import polars as pl
     >>> from qif_micro import model
 
-    Consider the following data:
+    Consider the following dataset:
+
     >>> dataset = pl.DataFrame({
     ...     "owner_id":  [0, 1, 2, 2, 3, 3],
     ...     "hint":      [0, 0, 0, 1, 0, 1],
@@ -105,6 +106,7 @@ def build(
     ... })
 
     The adversary's joint knowledge upon observing this dataset is:
+
     >>> joint = model.baseline(dataset, "hint")
     >>> joint.dist.toarray()
     array([[0.5  , 0.   ],
