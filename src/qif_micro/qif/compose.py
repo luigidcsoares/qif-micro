@@ -82,7 +82,7 @@ def parallel(
         - When ``False`` the function assumes that memory is not a
           concern and disables the optimisation.
 
-    n_partitions : int, optional (default: ``1```)
+    n_partitions : int, optional (default: ``1``)
         If sparse channels are involved (otherwise, this is ignored),
         controls the number of partitions to use for ``lhs`` when the
         result of the parallel composition would be too large.

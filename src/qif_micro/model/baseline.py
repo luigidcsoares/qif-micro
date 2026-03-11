@@ -289,7 +289,7 @@ def build(
     hint_label_expr = pl.concat_list(pl.exclude("hint")).alias("hint_label")
     map_labels = map_labels.select(hint_label_expr, "hint")
 
-    joint = qif.joint(pi, ch)
+    joint = qif.joint(pi, ch, n_partitions)
     map_owners = long_dataset # Map owners is just our long_dataset
 
     if return_owners and return_labels: return joint, map_owners, map_labels
@@ -386,7 +386,7 @@ def build(
     ch_dist = coo_array((data, (rows, cols)), shape=(n_rows, n_cols))
     ch = Channel(ch_dist.tocsr())
     
-    joint = qif.joint(pi, ch)
+    joint = qif.joint(pi, ch, n_partitions)
     map_owners = records_and_hints.select(owner_col, "record")
     map_labels = ch_metadata.select("hint_label", "hint").unique()
 

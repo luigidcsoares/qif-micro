@@ -1,8 +1,10 @@
+import math
+
 import polars as pl
 import numpy as np
 
 from multimethod import multimethod
-from scipy.sparse import issparse, csr_array
+from scipy.sparse import csr_array, hstack, issparse
 
 from qif_micro.qif.datatypes import (
     Channel,
@@ -11,7 +13,11 @@ from qif_micro.qif.datatypes import (
     Strategy
 )
 
-def joint(pi: ProbabDist,  ch: Channel) -> Joint:
+def joint(
+    pi: ProbabDist,
+    ch: Channel,
+    n_partitions: int = 1
+) -> Joint:
     """
     Pushes a prior through a channel to compute a joint distribution.
 
@@ -22,6 +28,10 @@ def joint(pi: ProbabDist,  ch: Channel) -> Joint:
 
     ch : Channel
         Stochastic channel (matrix) mapping secrets to observable outputs.
+
+    n_partitions : int, optional (default: ``1``)
+        Controls the number of partitions used to split the channel column-wise.
+        (Makes more sense for sparse channels, when memory is a concern.)
 
     Returns
     -------
@@ -60,9 +70,22 @@ def joint(pi: ProbabDist,  ch: Channel) -> Joint:
            [0.    , 0.5   , 0.    ],
            [0.    , 0.    , 0.25  ]])
     """
-    joint_dist = pi.dist[:, np.newaxis] * ch.dist
+    n_partitions = max(n_partitions, 1) # Just avoid negative or zero
+    n_cols = ch.dist.shape[1]
+
+    part_size = math.ceil(n_cols / n_partitions)
+    part_indptr = [i*part_size for i in range(n_partitions)] + [n_cols]
+    part_ranges = zip(part_indptr[:-1], part_indptr[1:])
+
+    pi_dist = pi.dist[:, np.newaxis] 
+    joint_dist_parts = [pi_dist * ch.dist[:, i:j] for i, j in part_ranges]
+
     # If channel is sparse, the result will be in coo repr, so we convert to csr
-    joint_dist = joint_dist.tocsr() if issparse(ch.dist) else joint_dist
+    joint_dist = (
+        hstack([d.tocsr() for d in joint_dist_parts]) if issparse(ch.dist)
+        else np.hstack(joint_dist_parts)
+    )
+
     # At this point, failure to build the joint is an implementation error
     try: return Joint(joint_dist)
     except Exception as e: assert False, f"Joint build failed: {e!r}"
