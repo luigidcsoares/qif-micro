@@ -23,8 +23,7 @@ def _mk_long_dataset(
     return (
         pl.concat(records_with_idx_it)
         # The longitudinal record will be a sequence of record ids.
-        # Ensure order, so that rank is deterministic.
-        .group_by(owner_col, maintain_order=True).agg("record")
+        .group_by(owner_col).agg("record")
         # We then transform the seq of ids into in a single id (row)
         .with_columns(record_expr)
     )

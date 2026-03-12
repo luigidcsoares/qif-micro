@@ -39,7 +39,7 @@ def build(
     datasets: Sequence[Dataset],
     hint: str | Iterable[str],
     owner_col: str = "owner_id",
-    n_partitions: int | Iterable[int] = 1,
+    n_partitions: int = 1,
     opt_memory: bool = True,
     return_owners: bool = False,
     return_labels: bool = False
@@ -67,6 +67,10 @@ def build(
 
     owner_col : str, optional (default: ``"owner_id"``)
         Column name for the owner identifier.
+
+    n_partitions : int, optional (default: ``1``)
+        Controls the number of partitions used to split the channel column-wise.
+        (Makes more sense for sparse channels, when memory is a concern.)
 
     opt_memory : bool, optional (default: ``True``)
         See the doc of ``qif.compose.parallel``
@@ -174,11 +178,11 @@ def build(
     if len(datasets) == 1: return build(
         datasets[0],
         hint,
-        owner_col,
-        n_partitions,
-        opt_memory,
-        return_owners,
-        return_labels
+        owner_col=owner_col,
+        n_partitions=n_partitions,
+        opt_memory=opt_memory,
+        return_owners=return_owners,
+        return_labels=return_labels
     )
 
     # Standardise ``hint`` input
@@ -214,11 +218,16 @@ def build(
     # We also need to augment the individual datasets so that we get
     # the longitudinal records and get channel rows properly aligned.
     def _build_model(dataset):
-        joint, map_owners, map_labels =  build(
-            dataset, hint, owner_col, n_partitions,
-            return_labels=True, return_owners=True
+        model = build(
+            dataset,
+            hint,
+            owner_col=owner_col,
+            n_partitions=n_partitions,
+            return_owners=True,
+            return_labels=return_labels
         ) 
 
+        joint, map_owners = model[:2]
         reindex = (
             map_owners
             .rename({"record": "row"})
@@ -234,8 +243,11 @@ def build(
 
         prior_dist = joint.dist.sum(axis=1)
         ch_dist = (joint.dist / prior_dist[:, np.newaxis]).tocsr()
+        ch = Channel(ch_dist[reindex, :])
 
-        return Channel(ch_dist[reindex, :]), map_labels
+        schema = {"hint_label": pl.Struct, "hint": pl.UInt64}
+        map_labels = model[2] if return_labels else pl.LazyFrame(schema=schema)
+        return ch, map_labels
         
 
     models_it = (_build_model(d) for d in datasets)
@@ -253,6 +265,17 @@ def build(
         
         ch_lhs, labels_lhs = model_lhs
         ch_rhs, labels_rhs = ch_seq[j], map_labels_seq[j]
+
+        if not return_labels:
+            ch = qif.compose.parallel(
+                ch_lhs,
+                ch_rhs,
+                n_partitions=n_partitions,
+                opt_memory=opt_memory,
+            )
+
+            schema = {"hint_label": pl.Struct, "hint": pl.UInt64}
+            return ch, pl.LazyFrame(schema=schema)
 
         with_suffix = lambda lf, col, s: lf.rename({col: f"{col}_{s}"})
         labels_lhs = with_suffix(labels_lhs, "hint_label", i)
@@ -281,7 +304,7 @@ def build(
 
 
     ch, map_labels = reduce(
-        lambda acc_model, next_idx : _compose(acc_model, next_idx),
+        _compose,
         range(1, len(ch_seq)),
         (ch_seq[0], map_labels_seq[0])
     )
@@ -304,7 +327,7 @@ def build(
     dataset: Dataset,
     hint: Iterable[str],
     owner_col: str = "owner_id",
-    n_partitions: int | Iterable[int] = 1,
+    n_partitions: int = 1,
     opt_memory: bool = True,
     return_owners: bool = False,
     return_labels: bool = False
@@ -349,8 +372,7 @@ def build(
     records_and_hints = (
         dataset
         .select(owner_col, record_entry_expr, hint_label_expr)
-        # Ensure order, so that rank is deterministic.
-        .group_by(owner_col, maintain_order=True)
+        .group_by(owner_col)
         .agg("record_entry", "hint_label", len_expr)
         .select(owner_col, record_expr, "hint_label", "len")
     )
