@@ -1,5 +1,6 @@
-import itertools
-import math
+from functools import reduce
+from itertools import chain
+from math import ceil
 
 import numpy as np
 import polars as pl
@@ -36,7 +37,7 @@ def _sparse_parallel(
     indices_by_row = [mk_indices(a, b) for a, b in zip_indices_by_row]
 
     row_len = (r.shape[0] for r in indices_by_row)
-    indptr = np.fromiter(itertools.chain((0,), row_len), np.uint64).cumsum()
+    indptr = np.fromiter(chain((0,), row_len), np.uint64).cumsum()
 
     # The indices at this point may have gaps. This would lead to
     # all-zero columns, which is bad memory-wise, so we remap them: 
@@ -227,19 +228,34 @@ def parallel(
     rhs, reduced_rhs = rhs[:, probab_nz_cols_rhs], rhs[:, determ_nz_cols_rhs]
     
     # We then compute the partial parallel composition
+    def _reduce_parallel(acc, part_range):
+        i, j = part_range
+        part_ch, part_cols = _sparse_parallel(lhs[:, i:j], rhs, return_cols)
+        acc_ch, acc_cols = acc
+        return hstack([acc_ch, part_ch]), np.vstack([acc_cols, part_cols])
+
+    
     n_partitions = max(min(n_partitions, lhs.shape[1]), 1)
-    part_size = math.ceil(lhs.shape[1] / n_partitions)
+    part_size = ceil(lhs.shape[1] / n_partitions)
 
     part_indptr = [i*part_size for i in range(n_partitions)] + [lhs.shape[1]]
-    part_ranges = zip(part_indptr[:-1], part_indptr[1:])
-    partitions, partition_cols = zip(*[
-        _sparse_parallel(lhs[:, i:j], rhs, return_cols)
-        for i, j in part_ranges
-    ])
+    part_ranges = list(zip(part_indptr[:-1], part_indptr[1:]))
+
+    i, j = part_ranges[0]
+    init = _sparse_parallel(lhs[:, i:j], rhs, return_cols)
+    parallel_dist, cols_unreduced = reduce(
+        _reduce_parallel,
+        part_ranges[1:],
+        init
+    )
+    # partitions, partition_cols = zip(*[
+    #     _sparse_parallel(lhs[:, i:j], rhs, return_cols)
+    #     for i, j in part_ranges
+    # ])
     
     # Finally, we combine column-wise the reduced and unreduced slices.
     # Pos-condition: optimised slice goes into the beginning of the matrix
-    parallel_dist = hstack([reduced_lhs, reduced_rhs, *partitions])
+    parallel_dist = hstack([reduced_lhs, reduced_rhs, parallel_dist])
     ch = Channel(parallel_dist)
 
     # Number of optimised columns, considering both sides of the composition
@@ -257,7 +273,7 @@ def parallel(
     # For the columns that haven't been optimised, we got the pairs
     # from _sparse_parallel, but we need to remap the columns, as
     # _sparse_parallel received slices of the original channels.
-    cols_unreduced = np.vstack(partition_cols)
+    # cols_unreduced = np.vstack(partition_cols)
     cols_unreduced[:, 0] = probab_nz_cols_lhs[cols_unreduced[:, 0]]
     cols_unreduced[:, 1] = probab_nz_cols_rhs[cols_unreduced[:, 1]]
 
