@@ -29,10 +29,11 @@ def _sparse_parallel(
     rhs_indices_by_row = np.split(rhs.indices, rhs.indptr[1:-1])
     zip_indices_by_row = zip(lhs_indices_by_row, rhs_indices_by_row)
 
-    indices_by_row = [
-        np.column_stack((np.repeat(a, b.shape[0]), np.tile(b, a.shape[0])))
-        for a, b in zip_indices_by_row
-    ]
+    broadcast_lhs = lambda a, b: np.repeat(a, b.shape[0])
+    broadcast_rhs = lambda a, b: np.tile(b, a.shape[0])
+    mk_col_pairs = lambda a, b: (broadcast_lhs(a, b), broadcast_rhs(a, b))
+    mk_indices = lambda a, b: np.column_stack(mk_col_pairs(a, b))
+    indices_by_row = [mk_indices(a, b) for a, b in zip_indices_by_row]
 
     row_len = (r.shape[0] for r in indices_by_row)
     indptr = np.fromiter(itertools.chain((0,), row_len), np.uint64).cumsum()
