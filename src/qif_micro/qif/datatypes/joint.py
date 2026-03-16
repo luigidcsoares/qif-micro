@@ -1,10 +1,12 @@
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
-from numpy.typing import NDArray
-from scipy.sparse import issparse, csr_array
 
-from ._internal import _is_dist_valid, _ProbabDistError
+from scipy.sparse import issparse
+
+from qif_micro.qif.datatypes.typing import Slice
+from qif_micro.qif.datatypes._internal import _is_dist_valid, _ProbabDistError
 
 @dataclass(frozen=True)
 class Joint:
@@ -29,11 +31,12 @@ class Joint:
            [0.    , 0.5   , 0.    ],
            [0.    , 0.    , 0.25  ]])
     """
-    dist: NDArray[np.floating] | csr_array
+    dist: Slice | Sequence[Slice]
 
     def __post_init__(self):
-        inner_data = self.dist.data if issparse(self.dist) else self.dist
-        dist_check = _is_dist_valid(inner_data.ravel()[np.newaxis, :])
+        inner_data = [s.data if issparse(s) else s for s in self.dist]
+        inner_data = [s.ravel()[np.newaxis, :] for s in inner_data]
+        dist_check = _is_dist_valid(inner_data)
 
         if dist_check is _ProbabDistError.NEGATIVE_VALUES:
             raise ValueError("Negative entries!")

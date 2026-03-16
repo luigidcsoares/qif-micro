@@ -1,11 +1,10 @@
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
 
-from numpy.typing import NDArray
-from scipy.sparse import csr_array
-
-from ._internal import _is_dist_valid, _ProbabDistError
+from qif_micro.qif.datatypes.typing import Slice
+from qif_micro.qif.datatypes._internal import _is_dist_valid, _ProbabDistError
 
 @dataclass(frozen=True)
 class Channel:
@@ -33,7 +32,7 @@ class Channel:
            [0.  , 1.  , 0.  ],
            [0.  , 0.  , 1.  ]])
     """
-    dist: NDArray[np.floating] | csr_array
+    dist: Slice | Sequence[Slice]
 
     def __post_init__(self):
         dist_check = _is_dist_valid(self.dist)

@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from functools import reduce
 from itertools import chain
 from math import ceil
@@ -9,25 +10,37 @@ from numpy.typing import NDArray
 from scipy.sparse import csr_array, hstack, issparse
 
 from qif_micro.qif.datatypes import Channel
+
+def _dense_parallel(lhs: NDArray[np.floating], rhs: NDArray[np.floating]):
+    n_rows = lhs.shape[0]
+    assert n_rows == rhs.shape[0]
+    return np.einsum("xy,xz->xyz", lhs, rhs).reshape(n_rows, -1)
+
     
 def _sparse_parallel(
     lhs: NDArray[np.floating],
     rhs: NDArray[np.floating],
     return_cols: bool
 ):
+    n_rows = lhs.shape[0]
+    assert n_rows == rhs.shape[0]
+    
     # The following implements row-wise outer product (parallel composition)
     # for scipy sparse matrices. There isn't yet an official implementation in scipy,
     # so this was obtained from: https://stackoverflow.com/questions/57099722/row-wise-outer-product-on-sparse-matrices
-    lhs_data_by_row = np.split(lhs.data, lhs.indptr[1:-1])
-    rhs_data_by_row = np.split(rhs.data, rhs.indptr[1:-1])
+    split_lhs = lhs.indptr[1:-1]
+    split_rhs = rhs.indptr[1:-1]
+
+    lhs_data_by_row = np.split(lhs.data, split_lhs)
+    rhs_data_by_row = np.split(rhs.data, split_rhs)
     zip_data_by_row = zip(lhs_data_by_row, rhs_data_by_row)
 
     mk_data = lambda a, b: np.outer(a, b).ravel()
     data_by_row = [mk_data(a, b) for a, b in zip_data_by_row]
     data = np.concatenate(data_by_row)
     
-    lhs_indices_by_row = np.split(lhs.indices, lhs.indptr[1:-1])
-    rhs_indices_by_row = np.split(rhs.indices, rhs.indptr[1:-1])
+    lhs_indices_by_row = np.split(lhs.indices, split_lhs)
+    rhs_indices_by_row = np.split(rhs.indices, split_rhs)
     zip_indices_by_row = zip(lhs_indices_by_row, rhs_indices_by_row)
 
     broadcast_lhs = lambda a, b: np.repeat(a, b.shape[0])
@@ -46,10 +59,9 @@ def _sparse_parallel(
 
     if not return_cols:
         _, indices = np.unique(flat_indices, return_inverse=True)
-        n_rows = lhs.shape[0]
         n_cols = indices.max() + 1
         ch_dist = csr_array((data, indices, indptr), shape=(n_rows, n_cols))
-        return ch_dist, np.empty(shape=(0, 2), dtype=np.uint64) # Empty cols
+        return ch_dist, np.empty(shape=(0, 2), dtype=np.uint64)
         
     _, first_pos, indices = np.unique(
         flat_indices,
@@ -57,7 +69,6 @@ def _sparse_parallel(
         return_inverse=True
     )
 
-    n_rows = lhs.shape[0]
     n_cols = indices.max() + 1
     ch_dist = csr_array((data, indices, indptr), shape=(n_rows, n_cols))
 
@@ -76,9 +87,7 @@ def parallel(
     lhs: Channel,
     rhs: Channel,
     opt_memory: bool = True,
-    n_partitions: int = 1,
     return_cols: bool = False,
-    return_n_opt: bool = False
 ) -> ReturnParallel:
     """
     Parallel composition of two channels ``lhs`` and ``rhs``.
@@ -97,21 +106,10 @@ def parallel(
         - When ``False`` the function assumes that memory is not a
           concern and disables the optimisation.
 
-    n_partitions : int, optional (default: ``1``)
-        If sparse channels are involved (otherwise, this is ignored),
-        controls the number of partitions to use for ``lhs`` when the
-        result of the parallel composition would be too large.
-
     return_cols : bool, optional (default: ``False``)
         If ``True`` and sparse channels are involved, the function returns
         the number column pairs as labels. If optimisation is enabled and
         some columns have been simplified, these will be paired with -1.
-
-    return_n_opt : bool, optional (default: ``False``)
-        If ``True`` and sparse channels are involved, the function returns
-        the number of output columns that were reduced. This value can be
-        used to slice the resulting channel into two parts. The optimiser
-        always places the optimised columns at the beginning of the output.
 
     Returns
     -------
@@ -121,8 +119,6 @@ def parallel(
     tuple (Channel, Columns | int)
         - The result of the parallel composition;
         - If ``return_columns`` enabled: The columns labels (pairs) OR
-          If ``return_n_opt`` enabled: the number of columns reduced
-          (including both ``lhs`` and  `rhs``; can be used to slice the ch).
 
     tuple (Channel, Columns, int)
         - The result of the parallel composition;
@@ -132,7 +128,7 @@ def parallel(
     Examples
     --------
     >>> import numpy as np
-    >>> from scipy.sparse import csr_array
+    >>> from scipy.sparse import csr_array, hstack
     >>> from qif_micro.qif.compose import parallel
     >>> from qif_micro.qif.datatypes import Channel
 
@@ -152,7 +148,7 @@ def parallel(
     
     >>> lhs = Channel(csr_array(lhs.dist))
     >>> rhs = Channel(csr_array(rhs.dist))
-    >>> parallel(lhs, rhs).dist.toarray()
+    >>> hstack(parallel(lhs, rhs).dist).toarray()
     array([[0.5       , 0.        , 0.16666667, 0.04166667, 0.04166667,
                 0.16666667, 0.04166667, 0.04166667],
                [0.        , 0.66666667, 0.11111111, 0.05555556, 0.        ,
@@ -170,32 +166,36 @@ def parallel(
            [ 3,  0],
            [ 3,  1],
            [ 3,  2]])
-
-    And it is possible to retrieve the count of reduced columns:
-
-    >>> parallel(lhs, rhs, return_n_opt=True)[1]
-    2
     """
+    # If any of the partitions is sparse, treat all of them as sparse.
+    lhs = lhs.dist if isinstance(lhs.dist, Sequence) else [lhs.dist]
+    rhs = rhs.dist if isinstance(rhs.dist, Sequence) else [rhs.dist]
+
+    is_lhs_sparse = np.any([issparse(s) for s in lhs])
+    is_rhs_sparse = np.any([issparse(s) for s in rhs])
+
     # Pre-condition: number of rows must match
-    n_rows = lhs.dist.shape[0]
-    if rhs.dist.shape[0] != n_rows:
+    n_rows = lhs[0].shape[0]
+    if rhs[0].shape[0] != n_rows:
         raise ValueError("Number of rows do not match!")
 
     # If channel is not sparse, memory is not a concern,
     # so just keep in the numpy realm:
-    if not (issparse(lhs.dist) or issparse(rhs.dist)):
-        parallel_dist = np.einsum("xy,xz->xyz", lhs.dist, rhs.dist)
-        return Channel(parallel_dist.reshape(n_rows, -1))
+    if not (is_lhs_sparse or is_rhs_sparse):
+        pairs = ((lhs_s, rhs_s) for lhs_s in lhs for rhs_s in rhs)
+        par_dist = [_dense_parallel(*p) for p in pairs]
+        par_dist = par_dist if len(par_dist) > 1 else par_dist[0]
+        return Channel(par_dist)
         
-    # Retrieve the inner objects and convert to sparse if necessary:
-    lhs = lhs.dist if issparse(lhs.dist) else csr_array(lhs.dist)
-    rhs = rhs.dist if issparse(rhs.dist) else csr_array(rhs.dist)
-
     # If memory is not a concern (even though channels are sparse),
     # just do the parallel composition without any optimisation.
     if not opt_memory:
-        ch_dist, cols = _sparse_parallel(lhs, rhs, return_cols)
-        return (Channel(ch_dist), cols) if return_cols else Channel(ch_dist)
+        pairs = ((s_lhs, s_rhs) for s_lhs in lhs for s_rhs in rhs)
+        result_it = (_sparse_parallel(*p, return_cols) for p in pairs)
+        par_dist, cols = zip(*result_it)
+        par_dist = par_dist if len(par_dist) > 1 else par_dist[0]
+        cols = np.vstack(cols)
+        return (Channel(par_dist), cols) if return_cols else Channel(par_dist)
     
     # Otherwise, parallel optimisation is enabled.
     # 
@@ -204,12 +204,18 @@ def parallel(
     # 
     # And then we split the lhs into two sub-channels,
     # one with the cols that we can optimise and the other with the remanining cols. 
-    nz_per_col = lhs.count_nonzero(axis=0)
+    nz_per_col = [s.count_nonzero(axis=0) for s in lhs]
     
-    determ_nz_cols_lhs = np.nonzero(nz_per_col == 1)[0]
-    probab_nz_cols_lhs = np.nonzero(nz_per_col > 1)[0]
+    determ_nz_cols_lhs = [np.nonzero(s == 1)[0] for s in nz_per_col]
+    probab_nz_cols_lhs = [np.nonzero(s > 1)[0] for s in nz_per_col]
     
-    lhs, reduced_lhs = lhs[:, probab_nz_cols_lhs], lhs[:, determ_nz_cols_lhs]
+    reduced_lhs = [lhs[i][:, c] for i, c in enumerate(determ_nz_cols_lhs)]
+    reduced_lhs = hstack(reduced_lhs)
+
+    unreduced_lhs = [
+        lhs[i][:, s_cols] for i, s_cols in enumerate(probab_nz_cols_lhs)
+        if s_cols.size > 0
+    ]
 
     # We then repeat for the rhs, but only those columns that do not match
     # with the reduced columns from the lhs (that is, non-zero at different index).
@@ -218,69 +224,86 @@ def parallel(
     all_rows = np.arange(n_rows)
     safe_rows = np.setdiff1d(all_rows, excluded_rows, assume_unique=True)
     
-    nz_per_col = rhs.count_nonzero(axis=0)
-    nz_per_col_safe = rhs[safe_rows, :].count_nonzero(axis=0)
-    safe_cols = nz_per_col == nz_per_col_safe
+    nz_per_col = [s.count_nonzero(axis=0) for s in rhs]
+    nz_per_col_safe = [s[safe_rows, :].count_nonzero(axis=0) for s in rhs]
+    safe_cols = [
+        s_nz == s_safe
+        for s_nz, s_safe in zip(nz_per_col, nz_per_col_safe)
+    ]
     
-    determ_nz_cols_rhs = np.nonzero((nz_per_col == 1) & safe_cols)[0]
-    probab_nz_cols_rhs = np.nonzero((nz_per_col > 1) | ~safe_cols)[0]
-    
-    rhs, reduced_rhs = rhs[:, probab_nz_cols_rhs], rhs[:, determ_nz_cols_rhs]
-    
-    # We then compute the partial parallel composition
-    def _reduce_parallel(acc, part_range):
-        i, j = part_range
-        part_ch, part_cols = _sparse_parallel(lhs[:, i:j], rhs, return_cols)
-        acc_ch, acc_cols = acc
-        return hstack([acc_ch, part_ch]), np.vstack([acc_cols, part_cols])
+    determ_nz_cols_rhs = [
+        np.nonzero((s_nz == 1) & s_safe)[0]
+        for s_nz, s_safe in zip(nz_per_col, safe_cols)
+    ]
 
-    
-    n_partitions = max(min(n_partitions, lhs.shape[1]), 1)
-    part_size = ceil(lhs.shape[1] / n_partitions)
+    probab_nz_cols_rhs = [
+        np.nonzero((s_nz > 1) | ~s_safe)[0]
+        for s_nz, s_safe in zip(nz_per_col, safe_cols)
+    ]
 
-    part_indptr = [i*part_size for i in range(n_partitions)] + [lhs.shape[1]]
-    part_ranges = list(zip(part_indptr[:-1], part_indptr[1:]))
+    reduced_rhs = [rhs[i][:, c] for i, c in enumerate(determ_nz_cols_rhs)]
+    reduced_rhs = hstack(reduced_rhs)
 
-    i, j = part_ranges[0]
-    init = _sparse_parallel(lhs[:, i:j], rhs, return_cols)
-    parallel_dist, cols_unreduced = reduce(
-        _reduce_parallel,
-        part_ranges[1:],
-        init
+    unreduced_rhs = [
+        rhs[i][:, s_cols] for i, s_cols in enumerate(probab_nz_cols_rhs)
+        if s_cols.size > 0
+    ]
+
+    pairs = (
+        (s_lhs, s_rhs)
+        for s_lhs in unreduced_lhs
+        for s_rhs in unreduced_rhs
     )
-    # partitions, partition_cols = zip(*[
-    #     _sparse_parallel(lhs[:, i:j], rhs, return_cols)
-    #     for i, j in part_ranges
-    # ])
+
+    result_it = (_sparse_parallel(*p, return_cols) for p in pairs)
+    par_dist, cols = zip(*result_it)
+
+    # We keep the two reduced slices as two separate partitions:
+    par_dist = [s for s in [reduced_lhs, reduced_rhs, *par_dist] if s.nnz > 0]
+    par_dist = par_dist if len(par_dist) > 1 else par_dist[0]
+
+    # We need to remap the columns, as _sparse_parallel received slices
+    # of the original channels.
+    k = 0
+    for i in range(len(lhs)):
+        if probab_nz_cols_lhs[i].size == 0: continue
+
+        for j in range(len(rhs)):
+            if probab_nz_cols_rhs[j].size == 0: continue
+
+            cols[k][:, 0] = probab_nz_cols_lhs[i][cols[k][:, 0]]
+            cols[k][:, 1] = probab_nz_cols_rhs[j][cols[k][:, 1]]
+
+            # Skip column 0 in the lhs, as there's no offset:
+            if i > 0: cols[k][:, 0] += lhs[i - 1].shape[1]
+
+            # Skip column 0 in the rhs, as there's no offset
+            if j > 0: cols[k][:, 1] += rhs[j - 1].shape[1]
+
+            k += 1
     
-    # Finally, we combine column-wise the reduced and unreduced slices.
-    # Pos-condition: optimised slice goes into the beginning of the matrix
-    parallel_dist = hstack([reduced_lhs, reduced_rhs, parallel_dist])
-    ch = Channel(parallel_dist)
+    # Then we compute the pairs of columns for the reduced slices:
+    cols_reduced_lhs = []
+    cols_reduced_rhs = []
 
-    # Number of optimised columns, considering both sides of the composition
-    # This can be used to split the channel into opt and non-opt slices.
-    n_opt = reduced_lhs.shape[1] + reduced_rhs.shape[1]
+    for i in range(len(lhs)):
+        if determ_nz_cols_lhs[i].size == 0: continue
 
-    # FIXME: THIS IS WRONG!!! LHS SHOULD HAVE -1 ON RHS
-    # Finally, we construct the column pairs. In the case of the optimised
-    # columns, we pair them with -1.
-    cols_opt = np.column_stack((
-        np.hstack([determ_nz_cols_lhs, determ_nz_cols_rhs]),
-        np.repeat(-1, n_opt)
-    ))
+        s_cols = determ_nz_cols_lhs[i]
+        s_cols += 0 if i == 0 else lhs[i - 1].shape[1]
 
-    # For the columns that haven't been optimised, we got the pairs
-    # from _sparse_parallel, but we need to remap the columns, as
-    # _sparse_parallel received slices of the original channels.
-    # cols_unreduced = np.vstack(partition_cols)
-    cols_unreduced[:, 0] = probab_nz_cols_lhs[cols_unreduced[:, 0]]
-    cols_unreduced[:, 1] = probab_nz_cols_rhs[cols_unreduced[:, 1]]
+        fill_rhs = np.repeat(-1, s_cols.shape[0])
+        cols_reduced_lhs.append(np.column_stack((s_cols, fill_rhs)))
 
-    cols = np.vstack([cols_opt, cols_unreduced])
+    for i in range(len(rhs)):
+        if determ_nz_cols_rhs[i].size == 0: continue
 
-    if return_cols and return_n_opt: return ch, cols, n_opt
-    if return_cols: return ch, cols
-    if return_n_opt: return ch, n_opt
+        s_cols = determ_nz_cols_rhs[i]
+        s_cols += 0 if i == 0 else rhs[i - 1].shape[1]
 
-    return ch
+        fill_lhs = np.repeat(-1, s_cols.shape[0])
+        cols_reduced_rhs.append(np.column_stack((fill_lhs, s_cols)))
+
+        
+    cols = np.vstack([*cols_reduced_lhs, *cols_reduced_rhs, *cols])
+    return (Channel(par_dist), cols) if return_cols else Channel(par_dist)

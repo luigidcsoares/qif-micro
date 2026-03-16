@@ -1,3 +1,5 @@
+from collections.abc import Sequence
+
 import numpy as np
 
 from multimethod import multimethod
@@ -83,4 +85,6 @@ def posterior(pi: ProbabDist, ch: Channel) -> np.floating:
 
 @multimethod
 def posterior(joint: Joint) -> np.floating:
-    return joint.dist.max(axis=0).sum()
+    is_partitioned = isinstance(joint.dist, Sequence)
+    joint_dist = joint.dist if is_partitioned else [joint.dist]
+    return sum(s.max(axis=0).sum() for s in joint_dist)

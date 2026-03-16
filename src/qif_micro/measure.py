@@ -1,3 +1,5 @@
+from collections.abc import Sequence
+
 import numpy as np
 
 from multimethod import multimethod
@@ -72,8 +74,22 @@ def linkage_risk(adv_model: BaselineModel) -> np.floating:
 
 @multimethod
 def linkage_risk(adv_model: Model) -> np.floating:
+    baseline, adv_st = adv_model[:2]
+
+    is_partitioned = isinstance(baseline.dist, Sequence)
+    baseline_dist = baseline.dist if is_partitioned else [baseline.dist]
+
+    is_partitioned = isinstance(adv_st.dist, Sequence)
+    adv_st_dist = adv_st.dist if is_partitioned else [adv_st.dist]
+
+    # Pre-condition: baseline and st must be partitioned in the same way:
+    if len(baseline_dist) != len(adv_st_dist):
+        raise ValueError("Baseline and Adv Strategy must have same partitions!")
+   
     # TODO: Consider other gain functions.
     #       This requires support for gain fn in the qif lib.
-    baseline_joint, adv_st = adv_model[:2]
-    expected_gain = baseline_joint.dist
-    return (expected_gain * adv_st.dist.T).sum()
+    expected_gain = baseline_dist
+    return sum(
+        (s_gain * s_st.T).sum()
+        for s_gain, s_st in zip(expected_gain, adv_st_dist)
+    )

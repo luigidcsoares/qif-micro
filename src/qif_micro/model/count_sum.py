@@ -33,7 +33,7 @@ def _mk_agg_entries(
 @multimethod
 def build(
     datasets: Sequence[Dataset],
-    agg_col: str,
+    agg_col: str = "agg",
     count_col: str = "count",
     sum_col: str = "sum",
     group_by_col: str | None = None,
@@ -70,7 +70,7 @@ def build(
         A dataset containing owners, hints and sensitive attributes.
         (Second overload)
 
-    agg_col : str
+    agg_col : str, optional (Default: ``agg``)
         Column name used in the sum aggregation (must be an integer).
         
     count_col : str, optional (default: ``"count"``)
@@ -125,7 +125,9 @@ def build(
     ... })
 
     >>> baseline_joint, adv_st = model.count_sum(
-    ...     dataset, "agg", group_by_col="group"
+    ...     dataset,
+    ...     agg_col="agg",
+    ...     group_by_col="group"
     ... )
 
     >>> baseline_joint.dist.toarray()
@@ -150,7 +152,9 @@ def build(
 
     >>> datasets = [dataset, dataset_rhs]
     >>> baseline_joint, adv_st = model.count_sum(
-    ...     datasets, "agg", group_by_col="group"
+    ...     datasets,
+    ...     agg_col="agg",
+    ...     group_by_col="group"
     ... )
 
     >>> baseline_joint.dist.toarray()
@@ -178,7 +182,10 @@ def build(
     We can get the map from owners to record ids (rows):
 
     >>> m = model.count_sum(
-    ...    datasets, "agg", group_by_col="group", return_owners=True
+    ...    datasets,
+    ...    agg_col="agg",
+    ...    group_by_col="group",
+    ...    return_owners=True
     ... )[2]
     >>> m.sort("owner_id").collect()
     shape: (4, 2)
@@ -196,7 +203,10 @@ def build(
     And the map from hint labels to the corresponding cols in the channel:
     
     >>> m = model.count_sum(
-    ...    datasets, "agg", group_by_col="group", return_labels=True
+    ...    datasets,
+    ...    agg_col="agg",
+    ...    group_by_col="group",
+    ...    return_labels=True
     ... )[2]
     >>> m.sort("hint_label").collect()
     shape: (10, 2)
@@ -238,12 +248,12 @@ def build(
 
         if not ok:
             msg = f"Missing the following attributes: {missing}!"
-            raise ValueError(prefix_msg + msg)
+            raise ValueError(msg)
 
         schema = dataset.collect_schema()
         if not schema[agg_col].is_integer():
             msg = f"``agg_col`` ({agg_col}) must be integer!"
-            raise ValueError(prefix_msg + msg)
+            raise ValueError(msg)
 
         owners_i = set(dataset.select(owners_expr).collect().to_series())
         if owners_i != owners:
@@ -285,10 +295,11 @@ def build(
     
     pi_orig_dist = joint_orig.dist.sum(axis=1)
     pi_agg = ProbabDist(
-        map_owners
-        .sort("record")
-        .with_columns(pl.lit(pi_orig_dist).alias("p"))
+        pl.LazyFrame({"p": pi_orig_dist}).with_row_index("record")
+        .join(map_owners, on="record")
         .join(long_agg_dataset, on=owner_col)
+        .drop(owner_col)
+        .unique()
         .group_by("agg_record").agg(pl.col("p").sum())
         .sort("agg_record")
         .select("p")
@@ -305,6 +316,8 @@ def build(
         pl.LazyFrame({ "record": rows, "hint": cols, "p": data })
         .join(map_owners, on="record")
         .join(long_agg_dataset, on=owner_col)
+        .drop(owner_col)
+        .unique()
         .group_by("agg_record", "hint")
         .agg(pl.col("p").sum())
         .collect()
@@ -394,7 +407,13 @@ def build(
         # Given the way we have constructed the hints, there will
         # be no cell for the case (k == 1) ^ (h != n). Similarly,
         # there will be no cell for the case (k > 1) ^ (h > n).
-        rlen_expr = k.unique().sum().over("agg_record")
+        rlen_expr = (
+            pl.struct(*_filter_optional([count_col, group_by_col]))
+            .unique()
+            .struct.field(count_col)
+            .sum()
+            .over("agg_record")
+        )
 
         next_p_log_expr = (
             k.log() - rlen_expr.log() + (k - 1).log()
@@ -424,7 +443,14 @@ def build(
     # We only have a slice of the actual channel (from the adv prespective),
     # we temporarily add a fake column, just so we can get a proper channel
     # (to rely on the pyqif lib stuff)
-    remaining_p_expr = (1 - pl.col("p").sum()).alias("p")
+    row_sum = pl.col("p").sum()
+    remaining_p_expr = (
+        # Avoid negative entries due to float errors
+        pl.when(row_sum.is_close(1)).then(0)
+        .otherwise(1 - row_sum)
+        .alias("p")
+    )
+
     remaining_p = ch_metadata.group_by("agg_record").agg(remaining_p_expr)
 
     n_rows = ch_metadata["agg_record"].max() + 1
@@ -465,7 +491,7 @@ def build(
 @multimethod
 def build(
     dataset: Dataset,
-    agg_col: str,
+    agg_col: str = "agg",
     count_col: str = "count",
     sum_col: str = "sum",
     group_by_col: str | None = None,

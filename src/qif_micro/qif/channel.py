@@ -1,6 +1,7 @@
-import numpy as np
+from collections.abc import Sequence
 
-from scipy.sparse import issparse, coo_array, csr_array
+import numpy as np
+from scipy.sparse import coo_array, csr_array, hstack, issparse
 
 from qif_micro.qif.datatypes import Channel
 
@@ -43,8 +44,12 @@ def reduced(ch: Channel) -> Channel:
            [0.83333333, 0.16666667, 0.        ]])
     """
     # Keep track if the original channel was sparse or not, to preserve repr.
-    keep_sparse = issparse(ch.dist)
-    ch_dist = csr_array(ch.dist)
+    # TODO: preserve partitions
+    is_partitioned = isinstance(ch.dist, Sequence)
+    ch_dist = ch.dist if is_partitioned else [ch.dist]
+
+    keep_sparse = np.any([issparse(s) for s in ch_dist])
+    ch_dist = hstack([csr_array(s) for s in ch_dist])
     
     # We start by dividing each col by the first non-zero entry.
     # This guarantees that, if col_i = k * col_j, we get rid of k,

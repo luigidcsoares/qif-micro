@@ -8,7 +8,7 @@ from multimethod import multimethod
 from scipy.sparse import coo_array
 
 from qif_micro import qif
-from qif_micro.qif.datatypes import Channel, ProbabDist
+from qif_micro.qif.datatypes import Channel, Joint, ProbabDist
 
 from qif_micro.model.typing import BaselineModel, Dataset
 from qif_micro.model._internal import _mk_long_dataset, _mk_records
@@ -99,6 +99,7 @@ def build(
     Examples
     --------
     >>> import polars as pl
+    >>> from scipy.sparse import hstack
     >>> from qif_micro import model
 
     Consider the following dataset:
@@ -127,7 +128,7 @@ def build(
 
     >>> datasets = [dataset, dataset_rhs]
     >>> joint = model.baseline(datasets, "hint")
-    >>> joint.dist.toarray()
+    >>> hstack(joint.dist).toarray()
     array([[0.   , 0.25 , 0.   ],
            [0.25 , 0.   , 0.   ],
            [0.   , 0.125, 0.125],
@@ -159,8 +160,8 @@ def build(
     │ ---             ┆ ---  │
     │ list[struct[1]] ┆ u32  │
     ╞═════════════════╪══════╡
+    │ [null, {1}]     ┆ 0    │
     │ [{0}, {0}]      ┆ 1    │
-    │ [{1}, null]     ┆ 0    │
     │ [{1}, {0}]      ┆ 2    │
     └─────────────────┴──────┘
     """
@@ -217,7 +218,7 @@ def build(
     # Now, for each dataset we compute the channel and get the map_labels.
     # We also need to augment the individual datasets so that we get
     # the longitudinal records and get channel rows properly aligned.
-    def _build_model(dataset):
+    def _build_model(dataset, n_partitions):
         model = build(
             dataset,
             hint,
@@ -241,16 +242,29 @@ def build(
             .ravel()
         )
 
-        prior_dist = joint.dist.sum(axis=1)
-        ch_dist = (joint.dist / prior_dist[:, np.newaxis]).tocsr()
-        ch = Channel(ch_dist[reindex, :])
+        is_partitioned = isinstance(joint.dist, Sequence)
+        joint_dist = joint.dist if is_partitioned else [joint.dist]
+
+        prior_dist = [s.sum(axis=1)[:, np.newaxis] for s in joint_dist]
+        prior_dist = np.hstack(prior_dist).sum(axis=1)
+
+        ch_dist = [s / prior_dist[:, np.newaxis] for s in joint_dist]
+        ch_dist = [s.tocsr()[reindex, :] for s in ch_dist]
+        ch_dist = ch_dist if len(ch_dist) > 1 else ch_dist[0]
+        ch = Channel(ch_dist)
 
         schema = {"hint_label": pl.Struct, "hint": pl.UInt64}
         map_labels = model[2] if return_labels else pl.LazyFrame(schema=schema)
         return ch, map_labels
         
 
-    models_it = (_build_model(d) for d in datasets)
+    # We focus all the partitioning into the first dataset of the sequence,
+    # so that each intermediate comp will have the desired num of partitions.
+    models_it = (
+        _build_model(d, n_partitions if i == 0 else 1)
+        for i, d in enumerate(datasets)
+    )
+
     ch_seq, map_labels_seq = zip(*models_it)
     
     # With the channel seq and the output labels, we proceed as follows.
@@ -266,28 +280,22 @@ def build(
         ch_lhs, labels_lhs = model_lhs
         ch_rhs, labels_rhs = ch_seq[j], map_labels_seq[j]
 
+        result = qif.compose.parallel(
+            ch_lhs,
+            ch_rhs,
+            opt_memory=opt_memory,
+            return_cols=return_labels
+        )
+
         if not return_labels:
-            ch = qif.compose.parallel(
-                ch_lhs,
-                ch_rhs,
-                n_partitions=n_partitions,
-                opt_memory=opt_memory,
-            )
-
             schema = {"hint_label": pl.Struct, "hint": pl.UInt64}
-            return ch, pl.LazyFrame(schema=schema)
+            return result, pl.LazyFrame(schema=schema)
 
+        ch, cols = result
+        
         with_suffix = lambda lf, col, s: lf.rename({col: f"{col}_{s}"})
         labels_lhs = with_suffix(labels_lhs, "hint_label", i)
         labels_rhs = with_suffix(labels_rhs, "hint_label", j)
-
-        ch, cols = qif.compose.parallel(
-            ch_lhs,
-            ch_rhs,
-            n_partitions=n_partitions,
-            opt_memory=opt_memory,
-            return_cols=True
-        )
 
         cols_lf = pl.LazyFrame({ str(i): cols[:, 0], str(j): cols[:, 1] })
         map_labels = (
@@ -312,7 +320,7 @@ def build(
     hint_label_expr = pl.concat_list(pl.exclude("hint")).alias("hint_label")
     map_labels = map_labels.select(hint_label_expr, "hint")
 
-    joint = qif.joint(pi, ch, n_partitions)
+    joint = qif.joint(pi, ch)
     map_owners = long_dataset # Map owners is just our long_dataset
 
     if return_owners and return_labels: return joint, map_owners, map_labels
@@ -357,7 +365,7 @@ def build(
     long_dataset = _mk_long_dataset([records], owner_col)
     pi = _mk_long_prior(long_dataset.drop(owner_col))
 
-    # Then we build a map from owners to records to hints,
+    # Then we build a map from owners to records and hints,
     # so that each record is identified as a row (of the prior and channel),
     # and each hint is identified as a column (of the channel).
     # 
@@ -396,19 +404,40 @@ def build(
         .with_columns(hint_expr)
     )
 
-    ch_dist_df = ch_metadata.select("record", "hint", "p").collect()
+    n_rows = ch_metadata.select("record").max().collect().item() + 1
+    def _mk_ch_dist(ch_dist_df):
+        # Make hint column compact again (as this is now a partition):
+        hint_expr = pl.col("hint_label").rank("dense").alias("hint") - 1
+        ch_dist_df = ch_dist_df.select("record", hint_expr, "p")
 
-    n_rows = ch_dist_df["record"].max() + 1
-    n_cols = ch_dist_df["hint"].max() + 1
+        # Here we recompute n_cols so we get the number of cols in the slice
+        n_cols = ch_dist_df["hint"].max() + 1
 
-    data = ch_dist_df["p"].to_numpy()
-    rows = ch_dist_df["record"].to_numpy()
-    cols = ch_dist_df["hint"].to_numpy()
+        data = ch_dist_df["p"].to_numpy()
+        rows = ch_dist_df["record"].to_numpy()
+        cols = ch_dist_df["hint"].to_numpy()
 
-    ch_dist = coo_array((data, (rows, cols)), shape=(n_rows, n_cols))
-    ch = Channel(ch_dist.tocsr())
+        ch_dist = coo_array((data, (rows, cols)), shape=(n_rows, n_cols))
+        return ch_dist.tocsr()
+
+
+    n_cols = ch_metadata.select("hint").max().collect().item() + 1
+    n_partitions = max(0, min(n_partitions, n_cols))
+    part_expr = (pl.col("hint") % n_partitions).alias("part")
+
+    partitions = (
+        ch_metadata
+        .with_columns(part_expr)
+        .collect()
+        .partition_by("part")
+    )
+
+    ch_dist = [_mk_ch_dist(part_metadata) for part_metadata in partitions]
+    ch_dist = ch_dist if len(ch_dist) > 1 else ch_dist[0]
+
+    ch = Channel(ch_dist)
     
-    joint = qif.joint(pi, ch, n_partitions)
+    joint = qif.joint(pi, ch)
     map_owners = records_and_hints.select(owner_col, "record")
     map_labels = ch_metadata.select("hint_label", "hint").unique()
 

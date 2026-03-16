@@ -1,10 +1,9 @@
-import math
+from collections.abc import Sequence
 
-import polars as pl
 import numpy as np
 
 from multimethod import multimethod
-from scipy.sparse import csr_array, hstack, issparse
+from scipy.sparse import csr_array, issparse
 
 from qif_micro.qif.datatypes import (
     Channel,
@@ -13,11 +12,7 @@ from qif_micro.qif.datatypes import (
     Strategy
 )
 
-def joint(
-    pi: ProbabDist,
-    ch: Channel,
-    n_partitions: int = 1
-) -> Joint:
+def joint(pi: ProbabDist, ch: Channel) -> Joint:
     """
     Pushes a prior through a channel to compute a joint distribution.
 
@@ -28,10 +23,6 @@ def joint(
 
     ch : Channel
         Stochastic channel (matrix) mapping secrets to observable outputs.
-
-    n_partitions : int, optional (default: ``1``)
-        Controls the number of partitions used to split the channel column-wise.
-        (Makes more sense for sparse channels, when memory is a concern.)
 
     Returns
     -------
@@ -64,27 +55,25 @@ def joint(
            [0.    , 0.    , 0.25  ]])
 
     It also works if the channel is not sparse:
+
     >>> ch = Channel(ch.dist.toarray())
     >>> qif.joint(pi, ch).dist
     array([[0.0625, 0.125 , 0.0625],
            [0.    , 0.5   , 0.    ],
            [0.    , 0.    , 0.25  ]])
     """
-    n_partitions = max(n_partitions, 1) # Just avoid negative or zero
-    n_cols = ch.dist.shape[1]
-
-    part_size = math.ceil(n_cols / n_partitions)
-    part_indptr = [i*part_size for i in range(n_partitions)] + [n_cols]
-    part_ranges = zip(part_indptr[:-1], part_indptr[1:])
-
+    is_partitioned = isinstance(ch.dist, Sequence)
+    ch_dist = ch.dist if is_partitioned else [ch.dist]
     pi_dist = pi.dist[:, np.newaxis] 
-    joint_dist_parts = [pi_dist * ch.dist[:, i:j] for i, j in part_ranges]
 
     # If channel is sparse, the result will be in coo repr, so we convert to csr
-    joint_dist = (
-        hstack([d.tocsr() for d in joint_dist_parts]) if issparse(ch.dist)
-        else np.hstack(joint_dist_parts)
-    )
+    def _mk_joint(s):
+        joint_slice = pi_dist * s
+        return joint_slice.tocsr() if issparse(s) else joint_slice
+
+    
+    joint_dist = [_mk_joint(s) for s in ch_dist]
+    joint_dist = joint_dist if len(joint_dist) > 1 else joint_dist[0]
 
     # At this point, failure to build the joint is an implementation error
     try: return Joint(joint_dist)
@@ -162,6 +151,7 @@ def hyper(pi: ProbabDist, ch: Channel) -> tuple[ProbabDist, Channel]:
            [0. , 0. , 0.8]])
 
     This function is overloaded to take a joint instead:
+
     >>> outer, posteriors = qif.hyper(qif.joint(pi, ch))
     >>> outer.dist
     array([0.0625, 0.625 , 0.3125])
@@ -176,10 +166,20 @@ def hyper(pi: ProbabDist, ch: Channel) -> tuple[ProbabDist, Channel]:
 
 @multimethod
 def hyper(joint: Joint) -> tuple[ProbabDist, Channel]:
-    outer_dist = joint.dist.sum(axis=0)
-    post_dists = joint.dist / outer_dist
-    post_dists = post_dists.tocsr() if issparse(joint.dist) else post_dists
-    return ProbabDist(outer_dist), Channel(post_dists.T)
+    is_partitioned = isinstance(joint.dist, Sequence)
+    joint_dist = joint.dist if is_partitioned else [joint.dist]
+
+    # If joint is sparse, the result will be in coo repr, so we convert to csr
+    def _mk_post(s_joint, s_outer):
+        post_slice = (s_joint / s_outer).T
+        return post_slice.tocsr() if issparse(s_joint) else post_slice
+
+    
+    outer_dist = [s.sum(axis=0) for s in joint_dist]
+    post_dists = [_mk_post(*p) for p in zip(joint_dist, outer_dist)]
+    post_dists = post_dists if len(post_dists) > 1 else post_dists[0]
+
+    return ProbabDist(np.hstack(outer_dist)), Channel(post_dists)
 
 
 @multimethod
@@ -258,19 +258,29 @@ def strategy(pi: ProbabDist, ch: Channel) -> Strategy:
 
 @multimethod
 def strategy(joint: Joint) -> Strategy:
-    dist = joint.dist if issparse(joint.dist) else csr_array(joint.dist)
+    is_partitioned = isinstance(joint.dist, Sequence)
+    joint_dist = joint.dist if is_partitioned else [joint.dist]
 
-    rows, cols = dist.nonzero()
-    col_max = dist.max(axis=0).toarray()
+    def _mk_strategy(dist):
+        dist = dist if issparse(dist) else csr_array(dist)
+
+        rows, cols = dist.nonzero()
+        col_max = dist.max(axis=0).toarray()
     
-    mask_data = dist[rows, cols] == col_max[cols]
-    mask = csr_array((mask_data, (rows, cols)), shape=dist.shape)
-    max_counts = mask.sum(axis=0)
+        mask_data = dist[rows, cols] == col_max[cols]
+        mask = csr_array((mask_data, (rows, cols)), shape=dist.shape)
+        max_counts = mask.sum(axis=0)
 
-    st_data = mask_data / max_counts[mask.indices]
-    st_dist = csr_array((st_data, mask.indices, mask.indptr), shape=dist.shape)
+        st_data = mask_data / max_counts[mask.indices]
+        csr_repr = (st_data, mask.indices, mask.indptr)
 
-    return Channel(st_dist.T)
+        return csr_array(csr_repr, shape=dist.shape).T
+
+    st_dist = [_mk_strategy(s) for s in joint_dist]
+    st_dist = st_dist if len(st_dist) > 1 else st_dist[0]
+
+    return Channel(st_dist)
+
     # FIXME: Keeping as backup. I do not really remember how this could happen.
     # 
     # It could be that the input is a joint with all-zero columns,
