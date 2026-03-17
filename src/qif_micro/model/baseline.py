@@ -378,11 +378,13 @@ def build(
     cols = dataset.collect_schema().names()
     record_attrs = [c for c in cols if c != owner_col]
     records_and_hints = (
-        dataset
-        .select(owner_col, record_entry_expr, hint_label_expr)
+        dataset.join(long_dataset, on=owner_col)
+        # Ensure determinism, so hint labels are sorted and we can
+        # identify owners with the same records.
+        .sort(pl.all())
+        .select(owner_col, "record", hint_label_expr)
         .group_by(owner_col)
-        .agg("record_entry", "hint_label", len_expr)
-        .select(owner_col, record_expr, "hint_label", "len")
+        .agg(pl.col("record").first(), "hint_label", len_expr)
     )
 
     p_expr = (pl.len() / pl.col("len").first()).alias("p")
@@ -438,8 +440,8 @@ def build(
     ch = Channel(ch_dist)
     
     joint = qif.joint(pi, ch)
-    map_owners = records_and_hints.select(owner_col, "record")
     map_labels = ch_metadata.select("hint_label", "hint").unique()
+    map_owners = long_dataset # Map owners is just our long_dataset
 
     if return_owners and return_labels: return joint, map_owners, map_labels
     if return_owners: return joint, map_owners
