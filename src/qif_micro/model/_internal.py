@@ -22,8 +22,11 @@ def _mk_long_dataset(
     record_expr = pl.col("record").rank("dense") - 1
     return (
         pl.concat(records_with_idx_it)
+        # Keep things deterministic, by sorting and preserving order
+        .sort(pl.all()) 
+        .group_by(owner_col, maintain_order=True)
         # The longitudinal record will be a sequence of record ids.
-        .group_by(owner_col).agg("record")
+        .agg("record")
         # We then transform the seq of ids into in a single id (row)
         .with_columns(record_expr)
     )
@@ -31,4 +34,10 @@ def _mk_long_dataset(
 
 def _mk_records(dataset: Dataset, owner_col: str = "owner_id") -> Dataset:
     record_entry_expr = pl.struct(pl.exclude(owner_col)).alias("record")
-    return dataset.group_by(owner_col).agg(record_entry_expr)
+    return (
+        dataset
+        # Keep things deterministic, by sorting and preserving order
+        .sort(pl.all())
+        .group_by(owner_col, maintain_order=True)
+        .agg(record_entry_expr)
+    )

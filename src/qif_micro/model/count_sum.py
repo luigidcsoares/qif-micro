@@ -158,26 +158,26 @@ def build(
     ... )
 
     >>> baseline_joint.dist.toarray()
-    array([[0.        , 0.        , 0.125     , 0.        , 0.        ,
+    array([[0.16666667, 0.        , 0.        , 0.        , 0.        ,
+            0.        , 0.        , 0.08333333, 0.        , 0.        ],
+           [0.        , 0.        , 0.125     , 0.        , 0.        ,
             0.        , 0.        , 0.        , 0.        , 0.125     ],
            [0.        , 0.        , 0.        , 0.        , 0.125     ,
             0.125     , 0.        , 0.        , 0.        , 0.        ],
-           [0.16666667, 0.        , 0.        , 0.        , 0.        ,
-            0.        , 0.        , 0.08333333, 0.        , 0.        ],
            [0.        , 0.0625    , 0.        , 0.0625    , 0.        ,
             0.        , 0.0625    , 0.        , 0.0625    , 0.        ]])
 
     >>> adv_st.dist.toarray()
-    array([[0., 0., 1., 0.],
+    array([[1., 0., 0., 0.],
            [0., 0., 0., 1.],
-           [1., 0., 0., 0.],
-           [0., 0., 0., 1.],
-           [0., 1., 0., 0.],
            [0., 1., 0., 0.],
            [0., 0., 0., 1.],
            [0., 0., 1., 0.],
+           [0., 0., 1., 0.],
            [0., 0., 0., 1.],
-           [1., 0., 0., 0.]])
+           [1., 0., 0., 0.],
+           [0., 0., 0., 1.],
+           [0., 1., 0., 0.]])
 
     We can get the map from owners to record ids (rows):
 
@@ -194,10 +194,10 @@ def build(
     │ ---      ┆ ---    │
     │ i64      ┆ u32    │
     ╞══════════╪════════╡
-    │ 0        ┆ 0      │
-    │ 1        ┆ 2      │
-    │ 2        ┆ 1      │
-    │ 3        ┆ 3      │
+    │ 0        ┆ 2      │
+    │ 1        ┆ 3      │
+    │ 2        ┆ 0      │
+    │ 3        ┆ 1      │
     └──────────┴────────┘
 
     And the map from hint labels to the corresponding cols in the channel:
@@ -347,12 +347,6 @@ def build(
     # We standardise the hints as a list (in case this is not longitudinal).
     labels_schema = map_labels.collect_schema()
     as_list = lambda c: c if labels_schema[c] == pl.List else pl.concat_list(c)
-
-    agg_entries = (
-        pl.concat(agg_entries_seq)
-        .group_by(owner_col)
-        .agg(pl.col("record").alias("agg_entries"))
-    )
 
     ch_metadata = (
         pl.LazyFrame({ "agg_record": range(n_rows), "hint": valid_cols })
