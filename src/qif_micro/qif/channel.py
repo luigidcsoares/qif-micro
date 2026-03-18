@@ -5,6 +5,33 @@ from scipy.sparse import coo_array, csr_array, hstack, issparse
 
 from qif_micro.qif.datatypes import Channel
 
+def identity(n: np.uint64) -> Channel:
+    """
+    Parameters
+    ----------
+    n: uint64
+        Number of rows and columns.
+
+    Returns
+    -------
+    Channel
+        A new deterministic channel with probability 1 in the diagonal.
+
+    Examples
+    --------
+    >>> from qif_micro import qif
+    >>> qif.channel.identity(3).dist.toarray()
+    array([[1., 0., 0.],
+           [0., 1., 0.],
+           [0., 0., 1.]])
+    """
+    data = np.repeat(1.0, n)    
+    indices = np.arange(n)
+    indptr = np.arange(n + 1)
+    ch_dist = csr_array((data, indices, indptr), shape=(n, n))
+    return Channel(ch_dist)
+
+
 def reduced(ch: Channel) -> Channel:
     """
     Reduce the columns of a channel by merging those that can be combined
