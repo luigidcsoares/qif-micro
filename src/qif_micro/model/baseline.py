@@ -10,8 +10,8 @@ from scipy.sparse import coo_array
 from qif_micro import qif
 from qif_micro.qif.datatypes import Channel, Joint, ProbabDist
 
-from qif_micro.model.typing import BaselineModel, Dataset
 from qif_micro.model._internal import _mk_long_dataset, _mk_records
+from qif_micro.typing import BaselineModel, Dataset
 from qif_micro._utils import _valid_columns
 
 def _mk_long_prior(long_dataset : Dataset) -> ProbabDist:
@@ -36,7 +36,7 @@ def _mk_long_prior(long_dataset : Dataset) -> ProbabDist:
 
 @multimethod
 def build(
-    datasets: Sequence[Dataset],
+    datasets: Iterable[Dataset],
     hint: str | Iterable[str],
     owner_col: str = "owner_id",
     n_partitions: int = 1,
@@ -58,8 +58,8 @@ def build(
         A dataset containing owners, hints and sensitive attributes.
         (First overload)
 
-    datasets : Sequence[Dataset]
-        A dataset containing owners, hints and sensitive attributes.
+    datasets : Iterable[Dataset]
+        One or more datasets containing owners, hints and sensitive attributes.
         (Second overload)
 
     hint : str | iterable of str
@@ -173,6 +173,7 @@ def build(
     #
     # If more than one dataset, they must contain the same owners.
     # =============================================================
+    datasets = list(datasets)
     if len(datasets) == 0: raise ValueError("Empty sequence of datasets!")
 
     # If only one dataset, dispatch to build(dataset, ...):
@@ -366,16 +367,9 @@ def build(
     # We also add the record length as a metadata.
     len_expr = pl.len().alias("len")
     hint_label_expr = pl.struct(hint).alias("hint_label")
-    record_entry_expr = pl.struct(pl.exclude(owner_col)).alias("record_entry")
-    record_expr = pl.col("record_entry").rank("dense").alias("record") - 1
 
-    cols = dataset.collect_schema().names()
-    record_attrs = [c for c in cols if c != owner_col]
     records_and_hints = (
         dataset.join(long_dataset, on=owner_col)
-        # Ensure determinism, so hint labels are sorted and we can
-        # identify owners with the same records.
-        .sort(pl.all())
         .select(owner_col, "record", hint_label_expr)
         .group_by(owner_col)
         .agg(pl.col("record").first(), "hint_label", len_expr)

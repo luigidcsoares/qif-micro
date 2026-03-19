@@ -1,4 +1,4 @@
-from collections.abc import Sequence
+from collections.abc import Iterable
 from functools import reduce
 
 import numpy as np
@@ -12,8 +12,8 @@ from qif_micro import qif
 from qif_micro.qif.datatypes import Channel, Joint, ProbabDist, Strategy
 
 from qif_micro.model import baseline
-from qif_micro.model.typing import Dataset, Model
 from qif_micro.model._internal import _mk_long_dataset, _mk_records
+from qif_micro.typing import Dataset, Model
 from qif_micro._utils import _valid_columns, _filter_optional
 
 def _mk_agg_entries(
@@ -32,7 +32,7 @@ def _mk_agg_entries(
 
 @multimethod
 def build(
-    datasets: Sequence[Dataset],
+    datasets: Iterable[Dataset],
     agg_col: str = "agg",
     count_col: str = "count",
     sum_col: str = "sum",
@@ -66,8 +66,8 @@ def build(
         A dataset containing owners, hints and sensitive attributes.
         (First overload)
 
-    datasets : Sequence[Dataset]
-        A dataset containing owners, hints and sensitive attributes.
+    datasets : Iterable[Dataset]
+        One or more datasets containing owners, hints and sensitive attributes.
         (Second overload)
 
     agg_col : str, optional (Default: ``agg``)
@@ -235,6 +235,7 @@ def build(
     #
     # If more than one dataset, they must contain the same owners.
     # =============================================================
+    datasets = list(datasets)
     if len(datasets) == 0: raise ValueError("Empty sequence of datasets!")
 
     owners_expr = pl.col(owner_col).unique()

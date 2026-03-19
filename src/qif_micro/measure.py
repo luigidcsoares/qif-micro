@@ -7,7 +7,7 @@ from multimethod import multimethod
 from qif_micro import qif
 from qif_micro.qif.datatypes import Joint
 
-from qif_micro.model.typing import BaselineModel, Model
+from qif_micro.typing import BaselineModel, Model
 
 @multimethod
 def linkage_risk(adv_model: BaselineModel) -> np.floating:

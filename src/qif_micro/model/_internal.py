@@ -2,7 +2,7 @@ from collections.abc import Iterable
 
 import polars as pl
 
-from qif_micro.model.typing import Dataset
+from qif_micro.typing import Dataset
 
 def _mk_long_dataset(
     records_it: Iterable[Dataset],
