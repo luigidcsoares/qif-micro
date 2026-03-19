@@ -8,8 +8,8 @@ def _filter_optional(xs: Iterable[Any]) -> Iterable[Any]:
 
    
 def _valid_columns(
-    lf: pl.LazyFrame,
+    df : pl.DataFrame,
     required: Iterable[str]
 ) -> tuple[bool, set[str]]:
-    missing = set(required) - set(lf.collect_schema().names())
+    missing = set(required) - set(df .collect_schema().names())
     return len(missing) == 0, missing

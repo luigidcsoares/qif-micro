@@ -15,18 +15,14 @@ from qif_micro.typing import BaselineModel, Dataset
 from qif_micro._utils import _valid_columns
 
 def _mk_long_prior(long_dataset : Dataset) -> ProbabDist:
-    n_records_expr = pl.len().alias("n_records")
-    p_expr = (pl.len() / pl.col("n_records").first()).alias("p")
+    p_expr = (pl.len() / long_dataset.height).alias("p")
 
     prior_dist = (
         long_dataset
-        .lazy()
-        .with_columns(n_records_expr) # Should be the same as before
         .group_by("record")
         .agg(p_expr)
         .sort("record")
         .select("p")
-        .collect()
         .to_numpy()
         .ravel()
     )
