@@ -133,7 +133,7 @@ def build(
     We can get the map from owners to record ids (rows):
 
     >>> m = model.baseline(datasets, "hint", return_owners=True)[1]
-    >>> m.sort("owner_id")
+    >>> m.collect()
     shape: (4, 2)
     ┌──────────┬────────┐
     │ owner_id ┆ record │
@@ -149,7 +149,7 @@ def build(
     And the map from hint labels to the corresponding cols in the channel:
 
     >>> m = model.baseline(datasets, "hint", return_labels=True)[1]
-    >>> m.sort("hint_label")
+    >>> m.collect()
     shape: (3, 2)
     ┌─────────────────┬──────┐
     │ hint_label      ┆ hint │
@@ -226,11 +226,12 @@ def build(
         reindex = (
             map_owners
             .rename({"record": "row"})
-            .join(long_dataset, on=owner_col)
+            .join(long_dataset.lazy(), on=owner_col)
             .drop(owner_col)
             .unique()
             .sort("record")
             .select("row")
+            .collect()
             .to_numpy()
             .ravel()
         )
@@ -247,7 +248,7 @@ def build(
         ch = Channel(ch_dist)
 
         schema = {"hint_label": pl.Struct, "hint": pl.UInt64}
-        map_labels = model[2] if return_labels else pl.DataFrame(schema=schema)
+        map_labels = model[2] if return_labels else pl.LazyFrame(schema=schema)
         return ch, map_labels
         
 
@@ -290,7 +291,7 @@ def build(
         labels_lhs = with_suffix(labels_lhs, "hint_label", i)
         labels_rhs = with_suffix(labels_rhs, "hint_label", j)
 
-        cols_lf = pl.DataFrame({ str(i): cols[:, 0], str(j): cols[:, 1] })
+        cols_lf = pl.LazyFrame({ str(i): cols[:, 0], str(j): cols[:, 1] })
         map_labels = (
             cols_lf
             .with_row_index()
@@ -314,7 +315,7 @@ def build(
     map_labels = map_labels.select(hint_label_expr, "hint")
 
     joint = qif.joint(pi, ch)
-    map_owners = long_dataset # Map owners is just our long_dataset
+    map_owners = long_dataset.lazy() # Map owners is just our long_dataset
 
     if return_owners and return_labels: return joint, map_owners, map_labels
     if return_owners: return joint, map_owners
@@ -376,7 +377,7 @@ def build(
         .group_by("record", "hint_label")
         .agg(p_expr)
 
-        # Transform the hint labels into col indices:
+        # and transform the hint labels into col indices:
         .with_columns(hint_expr)
     )
 
@@ -409,8 +410,8 @@ def build(
     ch = Channel(ch_dist)
     
     joint = qif.joint(pi, ch)
-    map_labels = ch_metadata.select("hint_label", "hint").unique()
-    map_owners = long_dataset # Map owners is just our long_dataset
+    map_labels = ch_metadata.lazy().select("hint_label", "hint").unique()
+    map_owners = long_dataset.lazy() # Map owners is just our long_dataset
 
     if return_owners and return_labels: return joint, map_owners, map_labels
     if return_owners: return joint, map_owners

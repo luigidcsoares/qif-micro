@@ -85,12 +85,6 @@ def build(
     owner_col : str, optional (default: ``"owner_id"``)
         Column name for the owner identifier.
 
-    return_owners : bool, optional (default: ``False``)
-        If true, the result includes a map from owners to row_indices.
-
-    return_labels : bool, optional (default: ``False``)
-        If true, the result includes a map from hint labels to column indices.
-
     Returns
     -------
     Joint
@@ -98,18 +92,6 @@ def build(
 
     Strategy
         The adversary's strategies for each valid output (given the baseline).
-
-    tuple (Joint, Strategy, MapOwners | MapLabels)
-        - The baseline joint knowledge;
-        - The adversary's strategies for each valid output (given the baseline);
-        - If ``map_owners`` enabled: map from owners to row indices OR
-          If ``map_labels`` enabled: map from hint labels to indices.
-
-    tuple (Joint, MapOwners, MapLabels)
-        - The baseline joint knowledge;
-        - The adversary's strategies for each valid output (given the baseline);
-        - Map from owners to row indices;
-        - Map from hint labels to indices.
     
     Examples
     -------
@@ -178,54 +160,6 @@ def build(
            [0., 0., 1., 0.],
            [0., 0., 0., 1.],
            [1., 0., 0., 0.]])
-
-    We can get the map from owners to record ids (rows):
-
-    >>> m = model.count_sum(
-    ...    datasets,
-    ...    agg_col="agg",
-    ...    group_by_col="group",
-    ...    return_owners=True
-    ... )[2]
-    >>> m.sort("owner_id")
-    shape: (4, 2)
-    ┌──────────┬────────┐
-    │ owner_id ┆ record │
-    │ ---      ┆ ---    │
-    │ i64      ┆ u32    │
-    ╞══════════╪════════╡
-    │ 0        ┆ 0      │
-    │ 1        ┆ 2      │
-    │ 2        ┆ 1      │
-    │ 3        ┆ 3      │
-    └──────────┴────────┘
-
-    And the map from hint labels to the corresponding cols in the channel:
-    
-    >>> m = model.count_sum(
-    ...    datasets,
-    ...    agg_col="agg",
-    ...    group_by_col="group",
-    ...    return_labels=True
-    ... )[2]
-    >>> m.sort("hint_label")
-    shape: (10, 2)
-    ┌─────────────────┬──────┐
-    │ hint_label      ┆ hint │
-    │ ---             ┆ ---  │
-    │ list[struct[2]] ┆ u32  │
-    ╞═════════════════╪══════╡
-    │ [{0,0}, {0,0}]  ┆ 0    │
-    │ [{0,0}, {0,1}]  ┆ 1    │
-    │ [{0,0}, {5,0}]  ┆ 2    │
-    │ [{1,0}, {0,1}]  ┆ 3    │
-    │ [{1,0}, {3,0}]  ┆ 4    │
-    │ [{1,0}, {5,0}]  ┆ 5    │
-    │ [{1,1}, {0,1}]  ┆ 6    │
-    │ [{2,0}, {0,0}]  ┆ 7    │
-    │ [{2,0}, {0,1}]  ┆ 8    │
-    │ [{2,0}, {5,0}]  ┆ 9    │
-    └─────────────────┴──────┘
     """
     # =============================================================
     # Pre-conditions: The dataset must be in "wide" format, where
@@ -279,22 +213,22 @@ def build(
     # 
     # This can be done by summing over records that map to same agg.
     # There's no need for normalisation, as the gain fn induces eq classes.
-    sort_cols = _filter_optional([owner_col, group_by_col, count_col, sum_col])
     agg_entries_seq = [
         _mk_agg_entries(d, agg_col, count_col, sum_col, group_by_col, owner_col)
-        .sort(sort_cols)
         .pipe(_mk_records, owner_col)
+        .lazy()
         for d in datasets
     ]
 
     long_agg_dataset = (
         _mk_long_dataset(agg_entries_seq, owner_col)
         .rename({"record": "agg_record"})
+        .lazy()
     )
     
     pi_orig_dist = joint_orig.dist.sum(axis=1)
     pi_agg = ProbabDist(
-        pl.DataFrame({"p": pi_orig_dist}).with_row_index("record")
+        pl.LazyFrame({"p": pi_orig_dist}).with_row_index("record")
         .join(map_owners, on="record")
         .join(long_agg_dataset, on=owner_col)
         .drop(owner_col)
@@ -302,6 +236,7 @@ def build(
         .group_by("agg_record").agg(pl.col("p").sum())
         .sort("agg_record")
         .select("p")
+        .collect()
         .to_numpy()
         .ravel()
     )
@@ -311,13 +246,14 @@ def build(
     rows, cols = joint_orig_dist.coords
 
     joint_agg_metadata = (
-        pl.DataFrame({ "record": rows, "hint": cols, "p": data })
+        pl.LazyFrame({"record": rows, "hint": cols, "p": data})
         .join(map_owners, on="record")
         .join(long_agg_dataset, on=owner_col)
         .drop(owner_col)
         .unique()
         .group_by("agg_record", "hint")
         .agg(pl.col("p").sum())
+        .collect()
     )
 
     n_rows = joint_agg_metadata["agg_record"].max() + 1
@@ -346,7 +282,7 @@ def build(
     as_list = lambda c: c if labels_schema[c] == pl.List else pl.concat_list(c)
 
     ch_metadata = (
-        pl.DataFrame({ "agg_record": range(n_rows), "hint": valid_cols })
+        pl.LazyFrame({"agg_record": range(n_rows), "hint": valid_cols})
         .explode("hint")
         .join(map_labels, on="hint")
         .with_columns(as_list("hint_label"))
@@ -429,7 +365,7 @@ def build(
         ch_metadata
     )
 
-    ch_metadata = ch_metadata.select("agg_record", "hint", "p")
+    ch_metadata = ch_metadata.select("agg_record", "hint", "p").collect()
 
     # We only have a slice of the actual channel (from the adv prespective),
     # we temporarily add a fake column, just so we can get a proper channel
@@ -467,14 +403,6 @@ def build(
 
     hint_joint = qif.joint(pi_agg, hint_ch)
     adv_st = Strategy(qif.strategy(hint_joint).dist[:-1, :])
-
-    # Both map_owners and map_labels should be the same as for the baseline,
-    # and the prior is also the same.
-    if return_owners and return_labels:
-        return baseline_joint, adv_st, map_owners, map_labels
-
-    if return_owners: return baseline_joint, adv_st, map_owners
-    if return_labels: return baseline_joint, adv_st, map_labels
 
     return baseline_joint, adv_st
 

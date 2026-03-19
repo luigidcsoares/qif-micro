@@ -1,4 +1,4 @@
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from typing import Any
 
 import numpy as np
@@ -6,18 +6,18 @@ import numpy as np
 from qif_micro.qif.datatypes import Channel
 
 def build(
-    input_domain: Iterable[Any],
-    output_domain: Iterable[Any],
     p: np.floating,
+    input_domain: Iterable[Any],
+    output_domain: Iterable[Any] | None = None,
     return_labels: bool = False
-) -> Channel:
+) -> Channel | tuple[Channel, Sequence[Any]]:
     """
     Examples
     --------
     >>> from qif_micro import mechanism
     >>> input_domain = [0, 1, 2]
     >>> output_domain = [0, 1, 2]
-    >>> mechanism.random_response(input_domain, output_domain, 1/2).dist
+    >>> mechanism.random_response(1/2, input_domain).dist
     array([[0.5 , 0.25, 0.25],
            [0.25, 0.5 , 0.25],
            [0.25, 0.25, 0.5 ]])
@@ -26,7 +26,7 @@ def build(
     
     >>> input_domain = ["d", "a", "b"]
     >>> output_domain = ["a", "b", "c", "d", "e"]
-    >>> mechanism.random_response(input_domain, output_domain, 1/2).dist
+    >>> mechanism.random_response(1/2, input_domain, output_domain).dist
     array([[0.5  , 0.125, 0.125, 0.125, 0.125],
            [0.125, 0.5  , 0.125, 0.125, 0.125],
            [0.125, 0.125, 0.5  , 0.125, 0.125]])
@@ -34,9 +34,9 @@ def build(
     And we can get the labels for each row and column:
 
     >>> row_labels, col_labels = mechanism.random_response(
+    ...     1/2,
     ...     input_domain,
     ...     output_domain,
-    ...     1/2,
     ...     return_labels=True
     ... )[1:]
 
@@ -52,7 +52,7 @@ def build(
 
     # The output domain must be a superset of the the input:
     input_domain = set(input_domain)
-    output_domain = set(output_domain)
+    output_domain = input_domain if output_domain is None else set(output_domain)
 
     if len(input_domain - output_domain) > 0:
         raise ValueError("Output must be a superset of input!")

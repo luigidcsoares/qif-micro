@@ -1,208 +1,196 @@
-# # from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 
-# import polars as pl
+import polars as pl
 
-# from qif_micro import qif
-# from qif_micro.datatypes import channel, Channel, LazyChannel
-# from qif_micro.datatypes import probab_dist, ProbabDist, LazyProbabDist
-# from qif_micro._internal import _valid_columns
+from multimethod import multimethod
 
-# def _hyper_mechanism(
-#     prior: ProbabDist | LazyProbabDist,
-#     mechanism: Channel | LazyChannel
-# ) -> [LazyProbabDist, LazyChannel]:
-#     """
-#     This function takes a prior and a mechanism (e.g., geometric noise),
-#     and it returns a hyper-distribution as a pair:
-#     - The first component is the outer distribution on the outputs
-#     - The second component is the set of posterior distributions,
-#       which (mathematically) is essentially a channel
+from qif_micro import qif
+from qif_micro.qif.datatypes import Channel, Joint, ProbabDist, Strategy
 
-#     ## Example
-#     >>> import polars as pl
-#     >>> from qif_micro import mechanism
-#     >>> from qif_micro import model
-#     >>> from qif_micro.datatypes import channel
-#     >>> from qif_micro.datatypes import probab_dist
+from qif_micro.model import baseline
+from qif_micro.model._internal import _mk_long_dataset, _mk_records
+from qif_micro.typing import Dataset, Model, Record
+from qif_micro._utils import _valid_columns
 
-#     >>> input_domain = [0, 1, 2]
-#     >>> output_domain = [0, 1, 2]
-#     >>> tg = mechanism.geometric(input_domain, output_domain, 1/3)
+def build(
+    pi: ProbabDist,
+    records: Sequence[Record],
+    mechanism: Channel,
+    baseline_dataset: Dataset,
+    sanitised_dataset: Dataset,
+    hint: Iterable[str],
+    owner_col: str = "owner_id",
+) -> Model:
+    """
+    TODOS
+    -----
+    Support longitudinal and multiple mechanisms.
 
-#     >>> prior_dist = pl.LazyFrame({
-#     ...     "secret": [0, 1, 2],
-#     ...     "p": [1/4, 1/2, 1/4],
-#     ... })
-#     >>> prior = probab_dist.make_lazy(prior_dist, ["secret"])
+    Examples
+    --------
+    >>> from functools import partial
+    >>> import numpy as np
+    >>> import polars as pl
+    >>> from qif_micro.qif.datatypes import ProbabDist
+    >>> from qif_micro import mechanism
+    >>> from qif_micro import model
 
-#     >>> outer, posteriors = model.generic._hyper_mechanism(prior, tg)
-#     >>> probab_dist.collect(outer)
-#     shape: (3, 2)
-#     ┌────────┬──────────┐
-#     │ output ┆ p        │
-#     │ ---    ┆ ---      │
-#     │ i64    ┆ f64      │
-#     ╞════════╪══════════╡
-#     │ 0      ┆ 0.333333 │
-#     │ 1      ┆ 0.333333 │
-#     │ 2      ┆ 0.333333 │
-#     └────────┴──────────┘
-#     >>> channel.collect(posteriors)
-#     shape: (9, 3)
-#     ┌────────┬───────┬────────┐
-#     │ output ┆ input ┆ p      │
-#     │ ---    ┆ ---   ┆ ---    │
-#     │ i64    ┆ i64   ┆ f64    │
-#     ╞════════╪═══════╪════════╡
-#     │ 0      ┆ 0     ┆ 0.5625 │
-#     │ 0      ┆ 1     ┆ 0.375  │
-#     │ 0      ┆ 2     ┆ 0.0625 │
-#     │ 1      ┆ 0     ┆ 0.125  │
-#     │ 1      ┆ 1     ┆ 0.75   │
-#     │ 1      ┆ 2     ┆ 0.125  │
-#     │ 2      ┆ 0     ┆ 0.0625 │
-#     │ 2      ┆ 1     ┆ 0.375  │
-#     │ 2      ┆ 2     ┆ 0.5625 │
-#     └────────┴───────┴────────┘
-#     """
-#     joint = qif.push(prior, mechanism)
+    Consider the following domain of records:
 
-#     p_expr = pl.col("p").sum()
-#     outer_dist = joint.dist.group_by(joint.output).agg(p_expr)
-#     outer = probab_dist.make_lazy(outer_dist, joint.output)
+    >>> records = [
+    ...     [{"q": 0, "s": 0}],
+    ...     [{"q": 0, "s": 1}],
+    ...     [{"q": 1, "s": 0}],
+    ...     [{"q": 1, "s": 1}],
+    ... ]
 
-#     p_expr = (pl.col("p") / pl.col("p_right")).alias("p")
-#     _ = joint.dist.join(outer_dist, on=joint.output)
-#     post_dists = _.select(*joint.output, *joint.secret, p_expr)
+    We first construct a prior on the domain of records:
 
-#     posts = channel.make_lazy(post_dists, joint.output, joint.secret)
-#     return outer, posts
-
-
-# def intermediate(
-#     dataset: pl.DataFrame | pl.LazyFrame,
-#     prior: ProbabDist | LazyProbabDist,
-#     mechanism: Channel | LazyChannel
-# ) -> LazyProbabDist:
-#     """
-#     This function takes a (possibly sanitised) dataset,
-#     a prior knowledge on records and the mechanism from records to records
-#     that was used to generate the dataset (it could be an identity mechanism).
-
-#     It then returns the adversary's intermediate knowledge on records,
-#     conditioned on the observation of the dataset.
-
-#     ## Example
+    >>> domain_size = len(records)
+    >>> pi = ProbabDist(np.repeat(1/domain_size, domain_size))
     
-#     >>> import polars as pl
-#     >>> from qif_micro import mechanism
-#     >>> from qif_micro import model
-#     >>> from qif_micro.datatypes import channel
-#     >>> from qif_micro.datatypes import probab_dist
-
-#     Consider the following sanitised dataset:
-#     >>> dataset = pl.LazyFrame({
-#     ...     "record_id": [0, 0, 1, 1, 2, 2],
-#     ...     "qid": [0, 0, 0, 1, 0, 0],
-#     ...     "sens": [0, 0, 0, 0, 1, 1]
-#     ... })
-
-#     Now, suppose that the domain of qid and sens is the same: {0, 1, 2},
-#     and suppose that it was applied geometric noise to each attribute:
-
-#     >>> input_domain = [0, 1, 2]
-#     >>> output_domain = [0, 1, 2]
-#     >>> tg = mechanism.geometric(input_domain, output_domain, 1/3)
-    
-#     The domain of records that could have been mapped to the records
-#     observed in the sanitised dataset can be computed as follows:
-
-#     >>> domain_q = pl.LazyFrame({ "qid": [0, 1, 2] })
-#     >>> domain_s = pl.LazyFrame({ "sens": [0, 1, 2] })
-#     >>> unique_record_expr = pl.struct("qid", "sens").alias("record").unique()
-#     >>> _ = domain_q.join(domain_q, how="cross")
-#     >>> _ = _.join(domain_s, how="cross")
-#     >>> _ = _.select(pl.concat_list(unique_record_expr))
-#     >>> domain_records = _.join(_, how="cross").select(pl.concat_list(pl.all()))
-
-#     Thus, the mechanism from records to records is
-#     >>> m_records = mechanism.record(
-#     ...     domain_records,
-#     ...     ("qid", [0, 1, 2], tg),
-#     ...     ("sens", [0, 1, 2], tg)
-#     ... )
-
-#     Consider a uniform prior over the records:
-
-#     >>> p_expr = (1 / pl.len()).alias("p")
-#     >>> prior_dist = domain_records.with_columns(p_expr)
-#     >>> prior = probab_dist.make_lazy(prior_dist, ["record"])
-
-#     Then, upon observing the sanitised dataset, the adversary's knowledge is
-
-#     >>> mid_knowledge = model.generic.intermediate(dataset, prior, m_records)
-#     >>> probab_dist.collect(mid_knowledge)
-#     shape: (81, 2)
-#     ┌─────────────────┬──────────┐
-#     │ input           ┆ p        │
-#     │ ---             ┆ ---      │
-#     │ list[struct[2]] ┆ f64      │
-#     ╞═════════════════╪══════════╡
-#     │ [{0,0}, {0,0}]  ┆ 0.105085 │
-#     │ [{0,0}, {0,1}]  ┆ 0.05207  │
-#     │ [{0,0}, {0,2}]  ┆ 0.017357 │
-#     │ [{0,0}, {1,0}]  ┆ 0.094018 │
-#     │ [{0,0}, {1,1}]  ┆ 0.03702  │
-#     │ …               ┆ …        │
-#     │ [{1,1}, {2,2}]  ┆ 0.001088 │
-#     │ [{1,2}, {2,2}]  ┆ 0.000363 │
-#     │ [{2,0}, {2,2}]  ┆ 0.000457 │
-#     │ [{2,1}, {2,2}]  ┆ 0.000363 │
-#     │ [{2,2}, {2,2}]  ┆ 0.000121 │
-#     └─────────────────┴──────────┘
-#     """
-#     # ==================================================
-#     # Pre-conditions: dataset must either be in "long"
-#     #   format with rows tagged with a record_id,
-#     #   or must have a single record column.
-#     # ==================================================
+    Then we construct the record-level mechanism:
      
-#     dataset = dataset.lazy()
-#     diff_record, ok_record = _valid_columns(dataset, ["record"])
-#     diff_id, ok_id = _valid_columns(dataset, ["record_id"])
-#     if not (ok_record or ok_id):
-#         msg_record = "Dataset must either have a single `record` column"
-#         msg_id = "have a column `record_id` tagged to every entry"
-#         raise ValueError(f"{msg_record} or {msg_id}")
+    >>> rr_q = partial(mechanism.random_response, p=2/3)
+    >>> rr_s = partial(mechanism.random_response, p=3/4)
+    >>> m = mechanism.record(records, {"q": rr_q, "s": rr_s})
 
-#     schema = dataset.collect_schema()
-#     if ok_record:
-#         ok_record_type = schema["record"] == pl.List
-#         if not ok_record_type:
-#             raise ValueError("`record` dtype must be list")
+    Finally, we define the input and output datasets that we want to analyse:
 
-#         ok_record_inner = schema["record"].inner == pl.Struct
-#         if not ok_record_inner:
-#             raise ValueError("`record` inner dtype must be struct")
+    >>> b_dataset = pl.DataFrame({
+    ...     "owner_id": [0, 1, 2, 3],
+    ...     "q":        [0, 0, 0, 1],
+    ...     "s":        [0, 0, 1, 1]
+    ... })
 
-#     else: # Transform dataset into long form
-#         record_attrs = [c for c in schema.keys() if c != "record_id"]
-#         record_expr = pl.struct(record_attrs).alias("record")
-#         _ = dataset.select("record_id", record_expr)
-#         _= _.group_by("record_id")
-#         dataset = _.agg(pl.col("record"))
-
-#     # ==================================================
-#     # Finished pre-conditions
-#     # ==================================================
+    >>> s_dataset = pl.DataFrame({
+    ...     "owner_id": [0, 1, 2, 3],
+    ...     "q":        [0, 1, 0, 1],
+    ...     "s":        [0, 1, 1, 1]
+    ... })
     
-#     n_records_expr = pl.len().alias("n_records")
-#     record_expr = pl.col("record").alias(mechanism.output[0])
-#     dataset = dataset.select(record_expr, n_records_expr)
-    
-#     p_expr = (pl.col("p").sum() / pl.col("n_records").first()).alias("p")
-#     _, posts_mechanism = _hyper_mechanism(prior, mechanism)
-#     _ = posts_mechanism.dist.join(dataset, on=mechanism.output)
-#     intermediate_dist = _.group_by(mechanism.secret).agg(p_expr)
+    >>> model.generic(pi, records, m, b_dataset, s_dataset, ["q"])
+    """
+    # ========================================================================
+    # Pre-conditions
+    # ========================================================================
 
-#     return probab_dist.make_lazy(intermediate_dist, mechanism.secret)
+    # We assume that each index i in the prior ``pi`` corresponds to the i-th
+    # record in the domain of records. So, their length must be the same.
+    if pi.dist.shape[0] != len(records):
+        raise ValueError("Incompatible prior ``pi`` and ``records``!")
+
+    # Standardise ``hint`` input
+    hint = [hint] if isinstance(hint, str) else hint
+
+    # Check the required attributes for the baseline and sanitised datasets
+    required = [owner_col, *hint]
+
+    ok, missing = _valid_columns(baseline_dataset, required)
+    if not ok: raise ValueError(f"Baseline missing attributes: {missing}")
+
+    ok, missing = _valid_columns(sanitised_dataset, required)
+    if not ok: raise ValueError(f"Sanitised missing attributes: {missing}")
+    
+    # We must also be sure that the baseline and sanitised datasets are
+    # compatible, according to the mechanism under analysis, and
+    # also with respect to the the domain of records:
+    as_df = lambda i, r: pl.DataFrame({"record": [r], "rid": [i]})
+    records = (as_df(i, r) for i, r in enumerate(records))
+    records_df = pl.concat(records, how="vertical_relaxed")
+
+    baseline_records = (
+        _mk_records(baseline_dataset, owner_col)
+        .join(records_df, on="record", how="left")
+    )
+    
+    sanitised_records = (
+        _mk_records(sanitised_dataset, owner_col)
+        .join(records_df, on="record", how="left")
+    )
+
+    hyper_mechanism = qif.hyper(pi, mechanism)[1].dist.tocoo()
+    data, rows, cols = hyper_mechanism.data, *hyper_mechanism.coords
+    hyper_mechanism_df = pl.DataFrame({"row": rows, "col": cols, "p": data})
+
+    transf_records = (
+        baseline_records
+        .join(sanitised_records, on=owner_col)
+        .rename({"rid": "row", "rid_right": "col"})
+        .rename({"record": "row_label", "record_right": "col_label"})
+        .join(hyper_mechanism_df, on=["row", "col"], how="left")
+    )
+
+    # There are three ways of getting a null probability:
+    # a. The mapping input record -> output record is impossible
+    # b. The input record is not possible according to the prior
+    # c. The input or output records are not even in the domain
+    if transf_records["p"].has_nulls():
+        raise ValueError("Incompatible baseline and sanitised datasets!")
+
+    # ========================================================================
+    
+    # The adversary's intermediate knowledge on a particular record is given
+    # by the sum of the posterior probability of that record, given
+    # the observed sanitised records, weighted by the dataset length.
+    p_expr = pl.col("p").sum() / sanitised_dataset.height
+    delta_metadata = (
+        sanitised_records.drop(owner_col, "record")
+        .join(hyper_mechanism_df, left_on="rid", right_on="col")
+        .group_by("row").agg(p_expr)
+        .join(records_df, left_on="row", right_on="rid")
+        .sort("row")
+    )
+
+    # To construct the hint channel, we follow the same approach implemented
+    # in the baseline model, but we re-implement it here so that we can
+    # restrict it to the hints that are possible in practice, but still
+    # keeping all records possible from the adversary's perspective.
+    len_expr = pl.col("record").list.len().alias("len")
+    extract_hints_expr = pl.col("record").struct.field(hint)
+    hint_label_expr = pl.struct(hint).alias("hint_label")
+    hint_expr = pl.col("hint_label").rank("dense").alias("hint") - 1
+    p_expr = (pl.len() / pl.col("len").first()).alias("p")
+
+    valid_hints = baseline_dataset.select(hint_label_expr).unique()
+    ch_metadata = (
+        delta_metadata.with_columns(len_expr)
+        .explode("record")
+        .select(pl.col("row").alias("record"), extract_hints_expr, "len")
+        .select("record", hint_label_expr, "len")
+        
+        # Filter hints so that we get only the ones that are possible
+        # in practice, according to the baseline:
+        .join(valid_hints, on="hint_label")
+
+        # Compute the probability of each cell in the channel
+        .group_by("record", "hint_label")
+        .agg(p_expr)
+
+        # and transform the hint labels into col indices:
+        .select("record", hint_expr, "p")
+    )
+
+    # The metadata above gives us just a slice of the hint channel,
+    # so it is not really a valid channel. But, we can construct from
+    # it the baseline joint (which will be a valid joint):
+    # 
+    p_expr = (
+        pl.when(pl.col("record_right").is_null()).then(0)
+        .otherwise(pl.col("p") / baseline_records.height)
+        .alias("p")
+    )
+
+    baseline_records = baseline_records.select(pl.col("rid").alias("record"))
+    baseline_joint_metadata = (
+        ch_metadata
+        .join(baseline_records, on="record", how="left", coalesce=False)
+        .with_columns(p_expr)
+        .group_by("record", "hint").agg(pl.col("p").sum())
+    )
+
+    n_rows = baseline_joint_metadata.select("record").max().item() + 1
+    n_cols = baseline_joint_metadata.select("hint").max().item() + 1
+    delta = delta_metadata["p"].to_numpy().ravel()
+
+    return baseline_joint_metadata

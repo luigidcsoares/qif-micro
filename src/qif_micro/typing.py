@@ -17,8 +17,10 @@ type Record = list[RecodEntry]
 
 # Allow only DataFrame, to ensure determinism!
 type Dataset = pl.DataFrame
-type MapLabels = pl.DataFrame
-type MapOwners = pl.DataFrame
+
+# But keeping labels in memory is expensive, so use the lazy API:
+type MapLabels = pl.LazyFrame
+type MapOwners = pl.LazyFrame
 
 type BaselineModel = (
     Joint
@@ -26,8 +28,4 @@ type BaselineModel = (
     | tuple[Joint, MapOwners, MapLabels]
 )
 
-type Model = (
-    tuple[Joint, Strategy]
-    | tuple[Joint, Strategy, MapOwners | MapLabels]
-    | tuple[Joint, Strategy, MapOwners, MapLabels]
-)
+type Model = tuple[Joint, Strategy]

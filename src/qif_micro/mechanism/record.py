@@ -1,5 +1,5 @@
-from collections.abc import Iterable
-from typing import Any, Protocol
+from collections.abc import Iterable, Sequence
+from typing import Any
 
 import polars as pl
 
@@ -7,28 +7,26 @@ from scipy.sparse import coo_array, csr_array
 
 from qif_micro import qif
 from qif_micro.qif.datatypes import Channel
-
-class Mechanism(Protocol):
-    def __call__(self, domain: Iterable[Any], **kwargs: Any) -> Channel:
-        ...
-        
-type RecordEntry = dict[str, Any]
-type Record = list[RecodEntry]
+from qif_micro.typing import AttrMechanism, Record
 
 def build(
     records: Iterable[Record],
-    mechanisms: dict[str, Mechanism],
-) -> Channel:
+    mechanisms: dict[str, AttrMechanism],
+) -> Channel | tuple[Channel, Sequence[Any]]:
     """
     This function generates a mechanism from records to records,
     based on attribute-level mechanisms.
+
+    TODOS
+    -----
+    Add support to mechanisms with different output domain.
     
     Parameters
     ----------
     records : Iterable{record}
         The domain of records, where each record is a list of dicts.
 
-    mechanisms : dict[str, Mechanism]
+    mechanisms : dict[str, AttrMechanism]
         A mapping from attributes to mechanisms. If empty, this is
         equivalent to applying the identity mechanism onto each attribute.
 
@@ -41,6 +39,7 @@ def build(
     
     Examples
     --------
+    >>> from functools import partial
     >>> from qif_micro import mechanism
 
     Consider the following domain of records:
@@ -52,19 +51,18 @@ def build(
     ...     [{"q": 1, "s": 1}],
     ... ]
 
-    We can apply a mechanism to a single attribute:
+    Then we can apply the mechanism to a single attribute:
     
-    >>> rr = mechanism.random_response
-    >>> rr_q = lambda domain, **kwargs: rr(domain, domain, 2/3, **kwargs)
+    >>> rr_q = partial(mechanism.random_response, p=2/3)
     >>> mechanism.record(records, {"q": rr_q}).dist.toarray()
     array([[0.66666667, 0.        , 0.33333333, 0.        ],
            [0.        , 0.66666667, 0.        , 0.33333333],
            [0.33333333, 0.        , 0.66666667, 0.        ],
            [0.        , 0.33333333, 0.        , 0.66666667]])
 
-    And we can also apply to multiple attributes:
+    We can also apply to multiple attributes:
     
-    >>> rr_s = lambda domain, **kwargs: rr(domain, domain, 3/4, **kwargs)
+    >>> rr_s = partial(mechanism.random_response, p=3/4)
     >>> mechanism.record(records, {"q": rr_q, "s": rr_s}).dist.toarray()
     array([[0.5       , 0.16666667, 0.25      , 0.08333333],
            [0.16666667, 0.5       , 0.08333333, 0.25      ],
@@ -123,7 +121,7 @@ def build(
         seq_domain = pl.concat(seq_domain)
 
         # Get the attribute-level mechanism with the labels:
-        result = mechanisms[attr](attr_domain, return_labels=True)
+        result = mechanisms[attr](input_domain=attr_domain, return_labels=True)
         ch, row_labels, col_labels = result
 
         domain_size = len(attr_domain)
