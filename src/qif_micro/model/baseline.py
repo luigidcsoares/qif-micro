@@ -351,38 +351,28 @@ def build(
     # End pre-conditions
     # =============================================================
 
-    # We begin by building the prior for the (possibly longitudinal) dataset:
     records = _mk_records(dataset, owner_col)
     long_dataset = _mk_long_dataset([records], owner_col)
     pi = _mk_long_prior(long_dataset.drop(owner_col))
 
-    # Then we build a map from owners to records and hints,
-    # so that each record is identified as a row (of the prior and channel),
-    # and each hint is identified as a column (of the channel).
-    # 
-    # We also add the record length as a metadata.
     len_expr = pl.len().alias("len")
     hint_label_expr = pl.struct(hint).alias("hint_label")
+    hint_expr = pl.col("hint_label").rank("dense").alias("hint") - 1
+    p_expr = (pl.len() / pl.col("len").first()).alias("p")
 
-    records_and_hints = (
+    ch_metadata = (
         dataset.join(long_dataset, on=owner_col)
         .select(owner_col, "record", hint_label_expr)
         .group_by(owner_col)
         .agg(pl.col("record").first(), "hint_label", len_expr)
-    )
-
-    p_expr = (pl.len() / pl.col("len").first()).alias("p")
-    hint_expr = pl.col("hint_label").rank("dense").alias("hint") - 1
-
-    ch_metadata = (
-        records_and_hints
         .drop(owner_col)
+
         # Drop possible duplicate records from the dataset,
         # as in the case of the channel we count things within records
         .unique()
         .explode("hint_label")
 
-        # Then, we compute the probability of each cell in the channel,
+        # Then, we compute the probability of each cell in the channel
         .group_by("record", "hint_label")
         .agg(p_expr)
 
