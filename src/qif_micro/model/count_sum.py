@@ -27,7 +27,7 @@ def _mk_agg_entries(
     sum_expr = pl.col(agg_col).sum().alias(sum_col)
     count_expr = pl.len().alias(count_col)
     histogram_cols = _filter_optional([owner_col, group_by_col])
-    return  dataset.group_by(histogram_cols).agg(count_expr, sum_expr)
+    return dataset.group_by(histogram_cols).agg(count_expr, sum_expr)
 
 
 @multimethod
@@ -158,26 +158,26 @@ def build(
     ... )
 
     >>> baseline_joint.dist.toarray()
-    array([[0.16666667, 0.        , 0.        , 0.        , 0.        ,
-            0.        , 0.        , 0.08333333, 0.        , 0.        ],
-           [0.        , 0.        , 0.125     , 0.        , 0.        ,
+    array([[0.        , 0.        , 0.125     , 0.        , 0.        ,
             0.        , 0.        , 0.        , 0.        , 0.125     ],
            [0.        , 0.        , 0.        , 0.        , 0.125     ,
             0.125     , 0.        , 0.        , 0.        , 0.        ],
+           [0.16666667, 0.        , 0.        , 0.        , 0.        ,
+            0.        , 0.        , 0.08333333, 0.        , 0.        ],
            [0.        , 0.0625    , 0.        , 0.0625    , 0.        ,
             0.        , 0.0625    , 0.        , 0.0625    , 0.        ]])
 
     >>> adv_st.dist.toarray()
-    array([[1., 0., 0., 0.],
-           [0., 0., 0., 1.],
-           [0., 1., 0., 0.],
-           [0., 0., 0., 1.],
-           [0., 0., 1., 0.],
-           [0., 0., 1., 0.],
+    array([[0., 0., 1., 0.],
            [0., 0., 0., 1.],
            [1., 0., 0., 0.],
            [0., 0., 0., 1.],
-           [0., 1., 0., 0.]])
+           [0., 1., 0., 0.],
+           [0., 1., 0., 0.],
+           [0., 0., 0., 1.],
+           [0., 0., 1., 0.],
+           [0., 0., 0., 1.],
+           [1., 0., 0., 0.]])
 
     We can get the map from owners to record ids (rows):
 
@@ -187,17 +187,17 @@ def build(
     ...    group_by_col="group",
     ...    return_owners=True
     ... )[2]
-    >>> m.sort("owner_id").collect()
+    >>> m.sort("owner_id")
     shape: (4, 2)
     ┌──────────┬────────┐
     │ owner_id ┆ record │
     │ ---      ┆ ---    │
     │ i64      ┆ u32    │
     ╞══════════╪════════╡
-    │ 0        ┆ 2      │
-    │ 1        ┆ 3      │
-    │ 2        ┆ 0      │
-    │ 3        ┆ 1      │
+    │ 0        ┆ 0      │
+    │ 1        ┆ 2      │
+    │ 2        ┆ 1      │
+    │ 3        ┆ 3      │
     └──────────┴────────┘
 
     And the map from hint labels to the corresponding cols in the channel:
@@ -208,7 +208,7 @@ def build(
     ...    group_by_col="group",
     ...    return_labels=True
     ... )[2]
-    >>> m.sort("hint_label").collect()
+    >>> m.sort("hint_label")
     shape: (10, 2)
     ┌─────────────────┬──────┐
     │ hint_label      ┆ hint │
@@ -237,10 +237,8 @@ def build(
     # =============================================================
     if len(datasets) == 0: raise ValueError("Empty sequence of datasets!")
 
-    datasets = [d.lazy() for d in datasets]
-
     owners_expr = pl.col(owner_col).unique()
-    owners = set(datasets[0].select(owners_expr).collect().to_series())
+    owners = set(datasets[0].select(owners_expr).to_series())
 
     for i, dataset in enumerate(datasets):
         orig_cols = _filter_optional([agg_col, group_by_col])
@@ -255,7 +253,7 @@ def build(
             msg = f"``agg_col`` ({agg_col}) must be integer!"
             raise ValueError(msg)
 
-        owners_i = set(dataset.select(owners_expr).collect().to_series())
+        owners_i = set(dataset.select(owners_expr).to_series())
         if owners_i != owners:
             raise ValueError("All datasets must have the same owners!")
 
@@ -295,7 +293,7 @@ def build(
     
     pi_orig_dist = joint_orig.dist.sum(axis=1)
     pi_agg = ProbabDist(
-        pl.LazyFrame({"p": pi_orig_dist}).with_row_index("record")
+        pl.DataFrame({"p": pi_orig_dist}).with_row_index("record")
         .join(map_owners, on="record")
         .join(long_agg_dataset, on=owner_col)
         .drop(owner_col)
@@ -303,7 +301,6 @@ def build(
         .group_by("agg_record").agg(pl.col("p").sum())
         .sort("agg_record")
         .select("p")
-        .collect()
         .to_numpy()
         .ravel()
     )
@@ -313,14 +310,13 @@ def build(
     rows, cols = joint_orig_dist.coords
 
     joint_agg_metadata = (
-        pl.LazyFrame({ "record": rows, "hint": cols, "p": data })
+        pl.DataFrame({ "record": rows, "hint": cols, "p": data })
         .join(map_owners, on="record")
         .join(long_agg_dataset, on=owner_col)
         .drop(owner_col)
         .unique()
         .group_by("agg_record", "hint")
         .agg(pl.col("p").sum())
-        .collect()
     )
 
     n_rows = joint_agg_metadata["agg_record"].max() + 1
@@ -349,7 +345,7 @@ def build(
     as_list = lambda c: c if labels_schema[c] == pl.List else pl.concat_list(c)
 
     ch_metadata = (
-        pl.LazyFrame({ "agg_record": range(n_rows), "hint": valid_cols })
+        pl.DataFrame({ "agg_record": range(n_rows), "hint": valid_cols })
         .explode("hint")
         .join(map_labels, on="hint")
         .with_columns(as_list("hint_label"))
@@ -432,7 +428,7 @@ def build(
         ch_metadata
     )
 
-    ch_metadata = ch_metadata.select("agg_record", "hint", "p").collect()
+    ch_metadata = ch_metadata.select("agg_record", "hint", "p")
 
     # We only have a slice of the actual channel (from the adv prespective),
     # we temporarily add a fake column, just so we can get a proper channel

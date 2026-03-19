@@ -2,10 +2,10 @@ from collections.abc import Iterable
 
 import polars as pl
 
-from qif_micro.model.typing import Dataset, MapOwners
+from qif_micro.model.typing import Dataset
 
 def _mk_long_dataset(
-    records_it: Iterable[MapOwners],
+    records_it: Iterable[Dataset],
     owner_col: str = "owner_id"
 ) -> Dataset:
     # First we construct the new the longitudinal records
@@ -22,8 +22,6 @@ def _mk_long_dataset(
     record_expr = pl.col("record").rank("dense") - 1
     return (
         pl.concat(records_with_idx_it)
-        # Keep things deterministic, by sorting and preserving order
-        .sort(pl.all()) 
         .group_by(owner_col, maintain_order=True)
         # The longitudinal record will be a sequence of record ids.
         .agg("record")
@@ -36,8 +34,6 @@ def _mk_records(dataset: Dataset, owner_col: str = "owner_id") -> Dataset:
     record_entry_expr = pl.struct(pl.exclude(owner_col)).alias("record")
     return (
         dataset
-        # Keep things deterministic, by sorting and preserving order
-        .sort(pl.all())
         .group_by(owner_col, maintain_order=True)
         .agg(record_entry_expr)
     )

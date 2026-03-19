@@ -137,7 +137,7 @@ def build(
     We can get the map from owners to record ids (rows):
 
     >>> m = model.baseline(datasets, "hint", return_owners=True)[1]
-    >>> m.sort("owner_id").collect()
+    >>> m.sort("owner_id")
     shape: (4, 2)
     ┌──────────┬────────┐
     │ owner_id ┆ record │
@@ -153,7 +153,7 @@ def build(
     And the map from hint labels to the corresponding cols in the channel:
 
     >>> m = model.baseline(datasets, "hint", return_labels=True)[1]
-    >>> m.sort("hint_label").collect()
+    >>> m.sort("hint_label")
     shape: (3, 2)
     ┌─────────────────┬──────┐
     │ hint_label      ┆ hint │
@@ -189,11 +189,8 @@ def build(
     # Standardise ``hint`` input
     hint = [hint] if isinstance(hint, str) else hint
 
-    # More than one dataset, so we must check owners:
-    datasets = [d.lazy() for d in datasets]
-
     owners_expr = pl.col(owner_col).unique()
-    owners = set(datasets[0].select(owners_expr).collect().to_series())
+    owners = set(datasets[0].select(owners_expr).to_series())
 
     for i, dataset in enumerate(datasets):
         required = [owner_col, *hint]
@@ -202,7 +199,7 @@ def build(
         if not ok:
             raise ValueError(f"{i}-th dataset missing attributes: {missing}")
 
-        owners_i = set(dataset.select(owners_expr).collect().to_series())
+        owners_i = set(dataset.select(owners_expr).to_series())
         if owners_i != owners:
             raise ValueError("All datasets must have the same owners!")
 
@@ -237,7 +234,6 @@ def build(
             .unique()
             .sort("record")
             .select("row")
-            .collect()
             .to_numpy()
             .ravel()
         )
@@ -254,7 +250,7 @@ def build(
         ch = Channel(ch_dist)
 
         schema = {"hint_label": pl.Struct, "hint": pl.UInt64}
-        map_labels = model[2] if return_labels else pl.LazyFrame(schema=schema)
+        map_labels = model[2] if return_labels else pl.DataFrame(schema=schema)
         return ch, map_labels
         
 
@@ -289,7 +285,7 @@ def build(
 
         if not return_labels:
             schema = {"hint_label": pl.Struct, "hint": pl.UInt64}
-            return result, pl.LazyFrame(schema=schema)
+            return result, pl.DataFrame(schema=schema)
 
         ch, cols = result
         
@@ -297,7 +293,7 @@ def build(
         labels_lhs = with_suffix(labels_lhs, "hint_label", i)
         labels_rhs = with_suffix(labels_rhs, "hint_label", j)
 
-        cols_lf = pl.LazyFrame({ str(i): cols[:, 0], str(j): cols[:, 1] })
+        cols_lf = pl.DataFrame({ str(i): cols[:, 0], str(j): cols[:, 1] })
         map_labels = (
             cols_lf
             .with_row_index()
@@ -346,8 +342,6 @@ def build(
     # corresponds to one of the record's attributes, and there must
     # be a special column that identified the owner of that record.
     # =============================================================
-    dataset = dataset.lazy()
-
     # Standardise ``hint`` input
     hint = [hint] if isinstance(hint, str) else hint
 
@@ -406,7 +400,7 @@ def build(
         .with_columns(hint_expr)
     )
 
-    n_rows = ch_metadata.select("record").max().collect().item() + 1
+    n_rows = ch_metadata.select("record").max().item() + 1
     def _mk_ch_dist(ch_dist_df):
         # Make hint column compact again (as this is now a partition):
         hint_expr = pl.col("hint_label").rank("dense").alias("hint") - 1
@@ -423,16 +417,11 @@ def build(
         return ch_dist.tocsr()
 
 
-    n_cols = ch_metadata.select("hint").max().collect().item() + 1
+    n_cols = ch_metadata.select("hint").max().item() + 1
     n_partitions = max(0, min(n_partitions, n_cols))
     part_expr = (pl.col("hint") % n_partitions).alias("part")
 
-    partitions = (
-        ch_metadata
-        .with_columns(part_expr)
-        .collect()
-        .partition_by("part")
-    )
+    partitions =  ch_metadata.with_columns(part_expr).partition_by("part")
 
     ch_dist = [_mk_ch_dist(part_metadata) for part_metadata in partitions]
     ch_dist = ch_dist if len(ch_dist) > 1 else ch_dist[0]

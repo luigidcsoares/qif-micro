@@ -2,9 +2,10 @@ import polars as pl
 
 from qif_micro.qif.datatypes import Joint, Strategy
 
-type Dataset = pl.DataFrame | pl.LazyFrame
-type MapLabels = pl.DataFrame | pl.LazyFrame
-type MapOwners = pl.DataFrame | pl.LazyFrame
+# Allow only DataFrame, to ensure determinism!
+type Dataset = pl.DataFrame
+type MapLabels = pl.DataFrame
+type MapOwners = pl.DataFrame
 
 type BaselineModel = (
     Joint
