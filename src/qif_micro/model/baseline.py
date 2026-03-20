@@ -133,7 +133,7 @@ def build(
     We can get the map from owners to record ids (rows):
 
     >>> m = model.baseline(datasets, "hint", return_owners=True)[1]
-    >>> m.collect(streaming="engine")
+    >>> m.collect(engine="streaming").sort(pl.all())
     shape: (4, 2)
     ┌──────────┬────────┐
     │ owner_id ┆ record │
@@ -149,7 +149,7 @@ def build(
     And the map from hint labels to the corresponding cols in the channel:
 
     >>> m = model.baseline(datasets, "hint", return_labels=True)[1]
-    >>> m.collect(streaming="engine")
+    >>> m.collect(engine="streaming").sort(pl.all())
     shape: (3, 2)
     ┌─────────────────┬──────┐
     │ hint_label      ┆ hint │

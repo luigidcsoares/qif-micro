@@ -377,10 +377,15 @@ def build(
         .alias("p")
     )
 
-    remaining_p = ch_metadata.group_by("agg_record").agg(remaining_p_expr)
+    remaining_p = (
+        ch_metadata
+        .group_by("agg_record")
+        .agg(remaining_p_expr)
+        .filter(pl.col("p") > 0)
+    )
 
     n_rows = ch_metadata["agg_record"].max() + 1
-    n_cols = ch_metadata["hint"].max() + 2
+    n_cols = ch_metadata["hint"].max() + 1
 
     data = np.hstack([
         ch_metadata["p"].to_numpy(),
@@ -394,14 +399,16 @@ def build(
     
     cols = np.hstack([
         ch_metadata["hint"].to_numpy(),
-        np.repeat(n_cols - 1, n_rows)
+        np.repeat(n_cols, remaining_p.height)
     ])
 
-    hint_ch_dist = coo_array((data, (rows, cols)), shape=(n_rows, n_cols))
+    coo_repr = (data, (rows, cols))
+    shape = (n_rows, n_cols + (1 if remaining_p.height > 0 else 0))
+    hint_ch_dist = coo_array(coo_repr, shape=shape)
     hint_ch = Channel(hint_ch_dist.tocsr())
 
-    hint_joint = qif.joint(pi_agg, hint_ch)
-    adv_st = Strategy(qif.strategy(hint_joint).dist[:-1, :])
+    adv_joint = qif.joint(pi_agg, hint_ch)
+    adv_st = Strategy(qif.strategy(adv_joint).dist[:n_cols, :])
 
     return baseline_joint, adv_st
 

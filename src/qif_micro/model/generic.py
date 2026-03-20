@@ -1,8 +1,10 @@
 from collections.abc import Iterable, Sequence
 
+import numpy as np
 import polars as pl
 
 from multimethod import multimethod
+from scipy.sparse import coo_array
 
 from qif_micro import qif
 from qif_micro.qif.datatypes import Channel, Joint, ProbabDist, Strategy
@@ -42,6 +44,8 @@ def build(
     ...     [{"q": 0, "s": 1}],
     ...     [{"q": 1, "s": 0}],
     ...     [{"q": 1, "s": 1}],
+    ...     [{"q": 2, "s": 0}],
+    ...     [{"q": 2, "s": 1}],
     ... ]
 
     We first construct a prior on the domain of records:
@@ -59,17 +63,35 @@ def build(
 
     >>> b_dataset = pl.DataFrame({
     ...     "owner_id": [0, 1, 2, 3],
-    ...     "q":        [0, 0, 0, 1],
-    ...     "s":        [0, 0, 1, 1]
+    ...     "q":        [0, 0, 1, 2],
+    ...     "s":        [0, 0, 0, 1]
     ... })
 
     >>> s_dataset = pl.DataFrame({
     ...     "owner_id": [0, 1, 2, 3],
-    ...     "q":        [0, 1, 0, 1],
-    ...     "s":        [0, 1, 1, 1]
+    ...     "q":        [0, 0, 1, 1],
+    ...     "s":        [0, 0, 1, 1]
     ... })
     
-    >>> model.generic(pi, records, m, b_dataset, s_dataset, ["q"])
+    >>> baseline_joint, adv_st = model.generic(
+    ...     pi, records, m, b_dataset, s_dataset, ["q"]
+    ... )
+
+    >>> baseline_joint.dist.toarray()
+    array([[0.5 , 0.  , 0.  ],
+           [0.  , 0.  , 0.  ],
+           [0.  , 0.25, 0.  ],
+           [0.  , 0.  , 0.  ],
+           [0.  , 0.  , 0.  ],
+           [0.  , 0.  , 0.25]])
+
+    For ``q = 0`` and ``q = 2``, the adversary would guess the record
+    correctly, but the noise makes them guess incorrectly for ``q = 1``:
+    
+    >>> adv_st.dist.toarray()
+    array([[1., 0., 0., 0., 0., 0.],
+           [0., 0., 0., 1., 0., 0.],
+           [0., 0., 0., 0., 0., 1.]])
     """
     # ========================================================================
     # Pre-conditions
@@ -174,7 +196,6 @@ def build(
     # The metadata above gives us just a slice of the hint channel,
     # so it is not really a valid channel. But, we can construct from
     # it the baseline joint (which will be a valid joint):
-    # 
     p_expr = (
         pl.when(pl.col("record_right").is_null()).then(0)
         .otherwise(pl.col("p") / baseline_records.height)
@@ -189,8 +210,56 @@ def build(
         .group_by("record", "hint").agg(pl.col("p").sum())
     )
 
-    n_rows = baseline_joint_metadata.select("record").max().item() + 1
-    n_cols = baseline_joint_metadata.select("hint").max().item() + 1
-    delta = delta_metadata["p"].to_numpy().ravel()
+    n_rows = baseline_joint_metadata["record"].max() + 1
+    n_cols = baseline_joint_metadata["hint"].max() + 1
 
-    return baseline_joint_metadata
+    data = baseline_joint_metadata["p"].to_numpy()
+    rows = baseline_joint_metadata["record"].to_numpy()
+    cols = baseline_joint_metadata["hint"].to_numpy()
+    coo_repr = (data, (rows, cols))
+
+    baseline_joint_dist = coo_array(coo_repr, shape=(n_rows, n_cols))
+    baseline_joint = Joint(baseline_joint_dist.tocsr())
+    
+    # As for the adversary's strategy, we temporarily add a fake column,
+    # just so we can get a proper channel (to rely on the pyqif lib stuff):
+    row_sum = pl.col("p").sum()
+    remaining_p_expr = (
+        # Avoid negative entries due to float errors
+        pl.when(row_sum.is_close(1)).then(0)
+        .otherwise(1 - row_sum)
+        .alias("p")
+    )
+
+    remaining_p = (
+        ch_metadata
+        .group_by("record")
+        .agg(remaining_p_expr)
+        .filter(pl.col("p") > 0)
+    )
+
+    data = np.hstack([
+        ch_metadata["p"].to_numpy(),
+        remaining_p["p"].to_numpy()
+    ])
+
+    rows = np.hstack([
+        ch_metadata["record"].to_numpy(),
+        remaining_p["record"].to_numpy()
+    ])
+    
+    cols = np.hstack([
+        ch_metadata["hint"].to_numpy(),
+        np.repeat(n_cols, remaining_p.height)
+    ])
+
+    coo_repr = (data, (rows, cols))
+    shape = (n_rows, n_cols + (1 if remaining_p.height > 0 else 0))
+    hint_ch_dist = coo_array(coo_repr, shape=shape)
+    hint_ch = Channel(hint_ch_dist.tocsr())
+
+    delta = ProbabDist(delta_metadata["p"].to_numpy().ravel())
+    adv_joint = qif.joint(delta, hint_ch)
+    adv_st = Strategy(qif.strategy(adv_joint).dist[:n_cols, :])
+
+    return baseline_joint, adv_st
