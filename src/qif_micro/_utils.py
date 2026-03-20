@@ -3,8 +3,8 @@ from typing import Any
 
 import polars as pl
 
-def _filter_optional(xs: Iterable[Any]) -> Iterable[Any]:
-    return (x for x in xs if x is not None)
+def _filter_optional(xs: Iterable[Any]) -> list[Any]:
+    return [x for x in xs if x is not None]
 
    
 def _valid_columns(

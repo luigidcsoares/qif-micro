@@ -16,20 +16,6 @@ from qif_micro.model._internal import _mk_long_dataset, _mk_records
 from qif_micro.typing import Dataset, Model
 from qif_micro._utils import _valid_columns, _filter_optional
 
-def _mk_agg_entries(
-    dataset: Dataset,
-    agg_col: str,
-    count_col: str = "count",
-    sum_col: str = "sum",
-    group_by_col: str | None = None,
-    owner_col: str = "owner_id"
-) -> Dataset:
-    sum_expr = pl.col(agg_col).sum().alias(sum_col)
-    count_expr = pl.len().alias(count_col)
-    histogram_cols = _filter_optional([owner_col, group_by_col])
-    return dataset.group_by(histogram_cols).agg(count_expr, sum_expr)
-
-
 @multimethod
 def build(
     datasets: Iterable[Dataset],
@@ -213,24 +199,28 @@ def build(
     # 
     # This can be done by summing over records that map to same agg.
     # There's no need for normalisation, as the gain fn induces eq classes.
+    sum_expr = pl.col(agg_col).sum().alias(sum_col)
+    count_expr = pl.len().alias(count_col)
+    histogram_cols = _filter_optional([owner_col, group_by_col])
+    sort_cols = _filter_optional([owner_col, group_by_col, count_col, sum_col])
+
     agg_entries_seq = [
-        _mk_agg_entries(d, agg_col, count_col, sum_col, group_by_col, owner_col)
+        d.group_by(histogram_cols).agg(count_expr, sum_expr)
+        .sort(sort_cols)
         .pipe(_mk_records, owner_col)
-        .lazy()
         for d in datasets
     ]
 
     long_agg_dataset = (
         _mk_long_dataset(agg_entries_seq, owner_col)
         .rename({"record": "agg_record"})
-        .lazy()
     )
     
     pi_orig_dist = joint_orig.dist.sum(axis=1)
     pi_agg = ProbabDist(
         pl.LazyFrame({"p": pi_orig_dist}).with_row_index("record")
         .join(map_owners, on="record")
-        .join(long_agg_dataset, on=owner_col)
+        .join(long_agg_dataset.lazy(), on=owner_col)
         .drop(owner_col)
         .unique()
         .group_by("agg_record").agg(pl.col("p").sum())
@@ -248,7 +238,7 @@ def build(
     joint_agg_metadata = (
         pl.LazyFrame({"record": rows, "hint": cols, "p": data})
         .join(map_owners, on="record")
-        .join(long_agg_dataset, on=owner_col)
+        .join(long_agg_dataset.lazy(), on=owner_col)
         .drop(owner_col)
         .unique()
         .group_by("agg_record", "hint")
@@ -289,11 +279,16 @@ def build(
         # We need ``count_col`` and ``sum_col``, but not per owner,
         # only per aggregated record, so we filter owners with same record.
         # Therefore, we drop owners with same record and keep on repr
-        .join(long_agg_dataset.unique("agg_record"), on="agg_record")
+        .join(long_agg_dataset.lazy().unique("agg_record"), on="agg_record")
     )
 
     def _with_count_sum(ch_metadata, i):
-        agg_entries = agg_entries_seq[i].explode("record").unnest("record")
+        agg_entries = (
+            agg_entries_seq[i]
+            .lazy()
+            .explode("record")
+            .unnest("record")
+        )
 
         pred_group = pl.lit(True) if group_by_col is None else (
             pl.col("hint_label").list.get(i).struct.field(group_by_col)
