@@ -226,7 +226,7 @@ def build(
         .group_by("agg_record").agg(pl.col("p").sum())
         .sort("agg_record")
         .select("p")
-        .collect()
+        .collect(engine="streaming")
         .to_numpy()
         .ravel()
     )
@@ -243,7 +243,7 @@ def build(
         .unique()
         .group_by("agg_record", "hint")
         .agg(pl.col("p").sum())
-        .collect()
+        .collect(engine="streaming")
     )
 
     n_rows = joint_agg_metadata["agg_record"].max() + 1
@@ -323,7 +323,7 @@ def build(
         h = pl.col(agg_col)
 
         # The prob of the hint is [h == n] if the count is 1 / record_count;
-        # else, we follow the formula above using ln of gamma
+        # else, we follow the formula from the paper, using ln of gamma
         # (we use log for precision).
         # 
         # Given the way we have constructed the hints, there will
@@ -360,9 +360,13 @@ def build(
         ch_metadata
     )
 
-    ch_metadata = ch_metadata.select("agg_record", "hint", "p").collect()
+    ch_metadata = (
+        ch_metadata
+        .select("agg_record", "hint", "p")
+        .collect(engine="streaming")
+    )
 
-    # We only have a slice of the actual channel (from the adv prespective),
+    # Since we only have a slice of the actual channel (from the adv persp),
     # we temporarily add a fake column, just so we can get a proper channel
     # (to rely on the pyqif lib stuff)
     row_sum = pl.col("p").sum()
