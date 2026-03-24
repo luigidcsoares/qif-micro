@@ -4,7 +4,7 @@ import numpy as np
 import polars as pl
 
 from multimethod import multimethod
-from scipy.sparse import coo_array
+from scipy.sparse import coo_array, csr_array, hstack
 
 from qif_micro import qif
 from qif_micro.qif.datatypes import Channel, Joint, ProbabDist, Strategy
@@ -163,100 +163,84 @@ def build(
         .join(records_df, left_on="row", right_on="rid")
         .sort("row")
     )
-
+    
     # To construct the hint channel, we follow the same approach implemented
     # in the baseline model, but we re-implement it here so that we can
     # restrict it to the hints that are possible in practice, but still
     # keeping all records possible from the adversary's perspective.
-    len_expr = pl.col("record").list.len().alias("len")
     extract_hints_expr = pl.col("record").struct.field(hint)
     hint_label_expr = pl.struct(hint).alias("hint_label")
     hint_expr = pl.col("hint_label").rank("dense").alias("hint") - 1
-    p_expr = (pl.len() / pl.col("len").first()).alias("p")
 
+    dense_row_expr = pl.col("row").rank("dense").alias("dense_row") - 1
+    
+    len_expr = pl.col("record").list.len().alias("len")
+    p_expr = (pl.len() / pl.col("len").first()).alias("p")
+    
     valid_hints = baseline_dataset.select(hint_label_expr).unique()
     ch_metadata = (
         delta_metadata.with_columns(len_expr)
         .explode("record")
-        .select(pl.col("row").alias("record"), extract_hints_expr, "len")
-        .select("record", hint_label_expr, "len")
+        .select("row", extract_hints_expr, "len")
+        .select("row", hint_label_expr, "len")
         
         # Filter hints so that we get only the ones that are possible
-        # in practice, according to the baseline:
-        .join(valid_hints, on="hint_label")
+        # in practice, according to the baseline.
+        #
+        # Make sure to maintain order to preserve the sort by rows
+        .join(valid_hints, on="hint_label", maintain_order="left")
 
-        # Compute the probability of each cell in the channel
-        .group_by("record", "hint_label")
+        # Compute the probability of each cell in the channel.
+        # Maintain order to preserve the sort by rows and the hint order.
+        .group_by("row", "hint_label", maintain_order=True)
         .agg(p_expr)
 
         # and transform the hint labels into col indices:
-        .select("record", hint_expr, "p")
+        .select("row", dense_row_expr, hint_expr, "p")
     )
-
+    
     # The metadata above gives us just a slice of the hint channel,
     # so it is not really a valid channel. But, we can construct from
     # it the baseline joint (which will be a valid joint):
-    p_expr = (
-        pl.when(pl.col("record_right").is_null()).then(0)
-        .otherwise(pl.col("p") / baseline_records.height)
-        .alias("p")
-    )
+    p_expr = (pl.col("p") / baseline_records.height).alias("p")
 
-    baseline_records = baseline_records.select(pl.col("rid").alias("record"))
+    baseline_records = baseline_records.select(pl.col("rid").alias("row"))
     baseline_joint_metadata = (
         ch_metadata
-        .join(baseline_records, on="record", how="left", coalesce=False)
+        # Maintain order to preserve the sort by rows and the hint order.
+        .join(baseline_records, on="row", maintain_order="left")
         .with_columns(p_expr)
-        .group_by("record", "hint").agg(pl.col("p").sum())
+        # Maintain order to preserve the sort by rows and the hint order.
+        .group_by("row", "hint", maintain_order=True)
+        .agg(pl.col("p").sum(), pl.col("dense_row").first())
     )
 
-    n_rows = baseline_joint_metadata["record"].max() + 1
+    n_rows = delta_metadata.height
     n_cols = baseline_joint_metadata["hint"].max() + 1
 
     data = baseline_joint_metadata["p"].to_numpy()
-    rows = baseline_joint_metadata["record"].to_numpy()
     cols = baseline_joint_metadata["hint"].to_numpy()
-    coo_repr = (data, (rows, cols))
+    rows = baseline_joint_metadata["dense_row"].to_numpy()
 
+    coo_repr = (data, (rows, cols))
     baseline_joint_dist = coo_array(coo_repr, shape=(n_rows, n_cols))
     baseline_joint = Joint(baseline_joint_dist.tocsr())
-    
+
     # As for the adversary's strategy, we temporarily add a fake column,
     # just so we can get a proper channel (to rely on the pyqif lib stuff):
-    row_sum = pl.col("p").sum()
-    remaining_p_expr = (
-        # Avoid negative entries due to float errors
-        pl.when(row_sum.is_close(1)).then(0)
-        .otherwise(1 - row_sum)
-        .alias("p")
-    )
+    data = ch_metadata["p"].to_numpy()
+    cols = ch_metadata["hint"].to_numpy()
+    rows = ch_metadata["dense_row"].to_numpy()
 
-    remaining_p = (
-        ch_metadata
-        .group_by("record")
-        .agg(remaining_p_expr)
-        .filter(pl.col("p") > 0)
-    )
-
-    data = np.hstack([
-        ch_metadata["p"].to_numpy(),
-        remaining_p["p"].to_numpy()
-    ])
-
-    rows = np.hstack([
-        ch_metadata["record"].to_numpy(),
-        remaining_p["record"].to_numpy()
-    ])
-    
-    cols = np.hstack([
-        ch_metadata["hint"].to_numpy(),
-        np.repeat(n_cols, remaining_p.height)
-    ])
-
+    shape = (n_rows, n_cols)
     coo_repr = (data, (rows, cols))
-    shape = (n_rows, n_cols + (1 if remaining_p.height > 0 else 0))
-    hint_ch_dist = coo_array(coo_repr, shape=shape)
-    hint_ch = Channel(hint_ch_dist.tocsr())
+    dist = coo_array(coo_repr, shape=shape).tocsr()
+    remaining_p = csr_array(1 - dist.sum(axis=1)[:, np.newaxis])
+
+    hint_ch = Channel(
+        dist if remaining_p.nnz == 0
+        else hstack([dist, remaining_p])
+    )
 
     delta = ProbabDist(delta_metadata["p"].to_numpy().ravel())
     adv_joint = qif.joint(delta, hint_ch)
