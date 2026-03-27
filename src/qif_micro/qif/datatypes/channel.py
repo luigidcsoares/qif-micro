@@ -25,7 +25,7 @@ class Channel:
 
     >>> ch
     Channel(dist=<Compressed Sparse Row sparse array of dtype 'float64'
-        with 5 stored elements and shape (3, 3)>)
+        with 5 stored elements and shape (3, 3)>, is_slice=False)
 
     >>> ch.dist.toarray()
     array([[0.25, 0.5 , 0.25],
@@ -33,12 +33,13 @@ class Channel:
            [0.  , 0.  , 1.  ]])
     """
     dist: Slice | Sequence[Slice]
+    is_slice: bool = False
 
     def __post_init__(self):
-        dist_check = _is_dist_valid(self.dist)
+        dist_check = _is_dist_valid(self.dist, self.is_slice)
 
         if dist_check is _ProbabDistError.NEGATIVE_VALUES:
             raise ValueError("Negative entries!")
 
-        if dist_check is  _ProbabDistError.ROW_SUM_MISMATCH:
+        if dist_check is _ProbabDistError.ROW_SUM_MISMATCH:
             raise ValueError("Rows do not add up to 1!")

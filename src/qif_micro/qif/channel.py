@@ -113,4 +113,5 @@ def reduced(ch: Channel) -> Channel:
     agg = coo_array((data, (rows, cols)), shape=(n_cols, n_unique_cols)).tocsc()
 
     reduced_dist = ch_dist @ agg
-    return Channel(reduced_dist if keep_sparse else reduced_dist.toarray())
+    reduced_dist = reduced_dist if keep_sparse else reduced_dist.toarray()
+    return Channel(reduced_dist, ch.is_slice)

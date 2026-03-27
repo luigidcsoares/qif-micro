@@ -24,7 +24,7 @@ class Joint:
 
     >>> joint
     Joint(dist=<Compressed Sparse Row sparse array of dtype 'float64'
-        with 5 stored elements and shape (3, 3)>)
+        with 5 stored elements and shape (3, 3)>, is_slice=False)
 
     >>> joint.dist.toarray()
     array([[0.0625, 0.125 , 0.0625],
@@ -32,11 +32,12 @@ class Joint:
            [0.    , 0.    , 0.25  ]])
     """
     dist: Slice | Sequence[Slice]
+    is_slice: bool = False
 
     def __post_init__(self):
         inner_data = [s.data if issparse(s) else s for s in self.dist]
         inner_data = [s.ravel()[np.newaxis, :] for s in inner_data]
-        dist_check = _is_dist_valid(inner_data)
+        dist_check = _is_dist_valid(inner_data, self.is_slice)
 
         if dist_check is _ProbabDistError.NEGATIVE_VALUES:
             raise ValueError("Negative entries!")

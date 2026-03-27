@@ -366,49 +366,19 @@ def build(
         .collect(engine="streaming")
     )
 
-    # Since we only have a slice of the actual channel (from the adv persp),
-    # we temporarily add a fake column, just so we can get a proper channel
-    # (to rely on the pyqif lib stuff)
-    row_sum = pl.col("p").sum()
-    remaining_p_expr = (
-        # Avoid negative entries due to float errors
-        pl.when(row_sum.is_close(1)).then(0)
-        .otherwise(1 - row_sum)
-        .alias("p")
-    )
-
-    remaining_p = (
-        ch_metadata
-        .group_by("agg_record")
-        .agg(remaining_p_expr)
-        .filter(pl.col("p") > 0)
-    )
-
     n_rows = ch_metadata["agg_record"].max() + 1
     n_cols = ch_metadata["hint"].max() + 1
 
-    data = np.hstack([
-        ch_metadata["p"].to_numpy(),
-        remaining_p["p"].to_numpy()
-    ])
-
-    rows = np.hstack([
-        ch_metadata["agg_record"].to_numpy(),
-        remaining_p["agg_record"].to_numpy()
-    ])
-    
-    cols = np.hstack([
-        ch_metadata["hint"].to_numpy(),
-        np.repeat(n_cols, remaining_p.height)
-    ])
+    data = ch_metadata["p"].to_numpy()
+    rows = ch_metadata["agg_record"].to_numpy()
+    cols = ch_metadata["hint"].to_numpy()
 
     coo_repr = (data, (rows, cols))
-    shape = (n_rows, n_cols + (1 if remaining_p.height > 0 else 0))
-    hint_ch_dist = coo_array(coo_repr, shape=shape)
-    hint_ch = Channel(hint_ch_dist.tocsr())
+    hint_ch_dist = coo_array(coo_repr, shape=(n_rows, n_cols))
+    hint_ch = Channel(hint_ch_dist.tocsr(), is_slice=True)
 
     adv_joint = qif.joint(pi_agg, hint_ch)
-    adv_st = Strategy(qif.strategy(adv_joint).dist[:n_cols, :])
+    adv_st = qif.strategy(adv_joint)
 
     return baseline_joint, adv_st
 

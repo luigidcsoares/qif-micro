@@ -13,12 +13,13 @@ class ProbabDist:
     >>> import numpy as np
     >>> from qif_micro.qif.datatypes import ProbabDist
     >>> ProbabDist(np.array([1/4, 1/2, 1/4]))
-    ProbabDist(dist=array([0.25, 0.5 , 0.25]))
+    ProbabDist(dist=array([0.25, 0.5 , 0.25]), is_slice=False)
     """
     dist: Slice
+    is_slice: bool = False
 
     def __post_init__(self):
-        dist_check = _is_dist_valid(self.dist[np.newaxis, :])
+        dist_check = _is_dist_valid(self.dist[np.newaxis, :], self.is_slice)
 
         if dist_check is _ProbabDistError.NEGATIVE_VALUES:
             raise ValueError("Negative entries!")

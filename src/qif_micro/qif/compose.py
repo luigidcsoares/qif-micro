@@ -167,6 +167,8 @@ def parallel(
            [ 3,  1],
            [ 3,  2]])
     """
+    is_slice = lhs.is_slice or rhs.is_slice
+
     # If any of the partitions is sparse, treat all of them as sparse.
     lhs = lhs.dist if isinstance(lhs.dist, Sequence) else [lhs.dist]
     rhs = rhs.dist if isinstance(rhs.dist, Sequence) else [rhs.dist]
@@ -185,7 +187,7 @@ def parallel(
         pairs = ((lhs_s, rhs_s) for lhs_s in lhs for rhs_s in rhs)
         par_dist = [_dense_parallel(*p) for p in pairs]
         par_dist = par_dist if len(par_dist) > 1 else par_dist[0]
-        return Channel(par_dist)
+        return Channel(par_dist, is_slice)
         
     # If memory is not a concern (even though channels are sparse),
     # just do the parallel composition without any optimisation.
@@ -195,7 +197,8 @@ def parallel(
         par_dist, cols = zip(*result_it)
         par_dist = par_dist if len(par_dist) > 1 else par_dist[0]
         cols = np.vstack(cols)
-        return (Channel(par_dist), cols) if return_cols else Channel(par_dist)
+        if return_cols: return Channel(par_dist, is_slice), cols
+        return Channel(par_dist, is_slice)
     
     # Otherwise, parallel optimisation is enabled.
     # 
@@ -306,4 +309,5 @@ def parallel(
 
         
     cols = np.vstack([*cols_reduced_lhs, *cols_reduced_rhs, *cols])
-    return (Channel(par_dist), cols) if return_cols else Channel(par_dist)
+    if return_cols: return Channel(par_dist, is_slice), cols
+    return Channel(par_dist, is_slice)

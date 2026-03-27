@@ -47,7 +47,7 @@ def joint(pi: ProbabDist, ch: Channel) -> Joint:
     >>> joint = qif.joint(pi, ch)
     >>> joint
     Joint(dist=<Compressed Sparse Row sparse array of dtype 'float64'
-        with 5 stored elements and shape (3, 3)>)
+        with 5 stored elements and shape (3, 3)>, is_slice=False)
 
     >>> joint.dist.toarray()
     array([[0.0625, 0.125 , 0.0625],
@@ -62,7 +62,9 @@ def joint(pi: ProbabDist, ch: Channel) -> Joint:
            [0.    , 0.5   , 0.    ],
            [0.    , 0.    , 0.25  ]])
     """
+    is_slice = pi.is_slice or ch.is_slice
     is_partitioned = isinstance(ch.dist, Sequence)
+
     ch_dist = ch.dist if is_partitioned else [ch.dist]
     pi_dist = pi.dist[:, np.newaxis] 
 
@@ -76,7 +78,7 @@ def joint(pi: ProbabDist, ch: Channel) -> Joint:
     joint_dist = joint_dist if len(joint_dist) > 1 else joint_dist[0]
 
     # At this point, failure to build the joint is an implementation error
-    try: return Joint(joint_dist)
+    try: return Joint(joint_dist, is_slice)
     except Exception as e: assert False, f"Joint build failed: {e!r}"
 
 
@@ -166,6 +168,7 @@ def hyper(pi: ProbabDist, ch: Channel) -> tuple[ProbabDist, Channel]:
 
 @multimethod
 def hyper(joint: Joint) -> tuple[ProbabDist, Channel]:
+    is_slice = joint.is_slice
     is_partitioned = isinstance(joint.dist, Sequence)
     joint_dist = joint.dist if is_partitioned else [joint.dist]
 
@@ -178,8 +181,13 @@ def hyper(joint: Joint) -> tuple[ProbabDist, Channel]:
     outer_dist = [s.sum(axis=0) for s in joint_dist]
     post_dists = [_mk_post(*p) for p in zip(joint_dist, outer_dist)]
     post_dists = post_dists if len(post_dists) > 1 else post_dists[0]
+    outer_dist = np.hstack(outer_dist)
 
-    return ProbabDist(np.hstack(outer_dist)), Channel(post_dists)
+    is_slice_outer = not np.isclose(outer_dist.sum(), 1.0)
+    outer = ProbabDist(outer_dist, is_slice_outer)
+    ch = Channel(post_dists, is_slice)
+
+    return outer, ch
 
 
 @multimethod
@@ -258,6 +266,7 @@ def strategy(pi: ProbabDist, ch: Channel) -> Strategy:
 
 @multimethod
 def strategy(joint: Joint) -> Strategy:
+    is_slice = joint.is_slice
     is_partitioned = isinstance(joint.dist, Sequence)
     joint_dist = joint.dist if is_partitioned else [joint.dist]
 
@@ -279,30 +288,4 @@ def strategy(joint: Joint) -> Strategy:
     st_dist = [_mk_strategy(s) for s in joint_dist]
     st_dist = st_dist if len(st_dist) > 1 else st_dist[0]
 
-    return Channel(st_dist)
-
-    # FIXME: Keeping as backup. I do not really remember how this could happen.
-    # 
-    # It could be that the input is a joint with all-zero columns,
-    # in which case there must be a strategy (uniform over all rows):
-    # nz_per_col = dist.count_nonzero(axis=0)
-    # allzero_cols = np.nonzero(nz_per_col == 0)[0]
-
-    # n_allzero = allzero_cols.shape[0]
-    # if n_allzero == 0: return Channel(st_dist.T)
-
-    # st_dist = st_dist.tocoo()
-    # st_data = st_dist.data
-    # st_rows, st_cols = st_dist.coords
-
-    # allzero_data = np.repeat(1 / n_allzero, n_allzero * dist.shape[0])
-    # allzero_rows, allzero_cols = zip(*(
-    #     (r, c) for c in allzero_cols for r in range(dist.shape[0])
-    # ))
-
-    # st_data = np.concatenate([st_data, allzero_data])
-    # st_rows = np.concatenate([st_rows, allzero_rows])
-    # st_cols = np.concatenate([st_cols, allzero_cols])
-
-    # st_dist = coo_array((st_data, (st_rows, st_cols)), shape=dist.shape)
-    # return Channel(st_dist.tocsr().T)
+    return Channel(st_dist, is_slice)
