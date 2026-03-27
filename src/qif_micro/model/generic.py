@@ -57,7 +57,7 @@ def build(
      
     >>> rr_q = partial(mechanism.random_response, p=2/3)
     >>> rr_s = partial(mechanism.random_response, p=3/4)
-    >>> m = mechanism.record(records, {"q": rr_q, "s": rr_s})
+    >>> m = mechanism.record({"q": rr_q, "s": rr_s}, records)
 
     Finally, we define the input and output datasets that we want to analyse:
 
@@ -226,8 +226,6 @@ def build(
     baseline_joint_dist = coo_array(coo_repr, shape=(n_rows, n_cols))
     baseline_joint = Joint(baseline_joint_dist.tocsr())
 
-    # As for the adversary's strategy, we temporarily add a fake column,
-    # just so we can get a proper channel (to rely on the pyqif lib stuff):
     data = ch_metadata["p"].to_numpy()
     cols = ch_metadata["hint"].to_numpy()
     rows = ch_metadata["dense_row"].to_numpy()
@@ -235,15 +233,11 @@ def build(
     shape = (n_rows, n_cols)
     coo_repr = (data, (rows, cols))
     dist = coo_array(coo_repr, shape=shape).tocsr()
-    remaining_p = csr_array(1 - dist.sum(axis=1)[:, np.newaxis])
 
-    hint_ch = Channel(
-        dist if remaining_p.nnz == 0
-        else hstack([dist, remaining_p])
-    )
+    hint_ch = Channel(dist, is_slice=True)
 
     delta = ProbabDist(delta_metadata["p"].to_numpy().ravel())
     adv_joint = qif.joint(delta, hint_ch)
-    adv_st = Strategy(qif.strategy(adv_joint).dist[:n_cols, :])
+    adv_st = qif.strategy(adv_joint)
 
     return baseline_joint, adv_st
