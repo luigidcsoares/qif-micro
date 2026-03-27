@@ -8,8 +8,8 @@ from qif_micro.qif.datatypes import Channel, Joint, Strategy
 class AttrMechanism(Protocol):
     def __call__(
         self,
-        input_domain: Iterable[Any],
-        return_labels: bool = False
+        return_labels: bool = False,
+        **kwargs: Any,
     ) -> Channel | tuple[Channel, Sequence[Any]]: ...
         
 type RecordEntry = dict[str, Any]

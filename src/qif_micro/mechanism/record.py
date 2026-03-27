@@ -1,4 +1,6 @@
 from collections.abc import Iterable, Sequence
+from functools import partial
+from inspect import signature
 from typing import Any
 
 import polars as pl
@@ -34,8 +36,11 @@ def build(
         only the records that the adversary believes that are possible.
 
     output_domain: Iterable[Record], optional (default: None)
-        The domain of records (must be the entire domain).
-        If none, defaults to input_domain.
+        A (sub-)domain of records, where each record is a list of dicts.
+        This need not be the entire domain; it may be a sub-domain with
+        only the records that the adversary believes that are possible.
+
+        If omitted, we assume it is the same as ``input_domain``.
 
     Returns
     -------
@@ -129,13 +134,21 @@ def build(
         # Min and max record length comes from the input domain
         min_record_len = input_domain[attr].list.len().min()
         max_record_len = input_domain[attr].list.len().max()
-        # but we need the entire attribute domain, so it has to come
-        # from the output domain (as they may differ, and output is complete).
-        attr_domain = output_domain[attr].explode().unique().to_list()
+
+        # If the user has not provided the attr input or output domains,
+        # we derive them from the domain of records.
+        m = mechanisms[attr]
+        param = signature(mechanisms[attr]).parameters["input_domain"]
+        if param.default is param.empty:
+            attr_domain = input_domain[attr].explode().unique().to_list()
+            m = partial(m, input_domain=attr_domain)
         
-        # Get the attribute-level mechanism with the labels:
-        result = mechanisms[attr](input_domain=attr_domain, return_labels=True)
-        ch, row_labels, col_labels = result
+        param = signature(mechanisms[attr]).parameters["output_domain"]
+        if param.default is param.empty:
+            attr_domain = output_domain[attr].explode().unique().to_list()
+            m = partial(m, output_domain=attr_domain)
+
+        ch, row_labels, col_labels = m(return_labels=True)
 
         domain_size = len(attr_domain)
         map_row_labels = {"row_label": row_labels, "row": range(domain_size)}
