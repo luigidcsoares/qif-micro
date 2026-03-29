@@ -9,6 +9,8 @@ def build(
     alpha: np.floating,
     input_domain: Iterable[Any],
     output_domain: Iterable[Any] | None = None,
+    domain_min: int | None = None,
+    domain_max: int | None = None,
     return_labels: bool = False
 ) -> Channel | tuple[Channel, Sequence[Any]]:
     """
@@ -26,6 +28,14 @@ def build(
     output_domain : Iterable[Any] | None
         The domain of possible output values. If None, defaults to input_domain.
         Must be a superset of input_domain and contain integers.
+
+    domain_min : int | None
+        The minimum value of the full domain. If None, defaults to the minimum
+        of output_domain. Used for boundary condition calculations.
+
+    domain_max : int | None
+        The maximum value of the full domain. If None, defaults to the maximum
+        of output_domain. Used for boundary condition calculations.
 
     return_labels : bool
         If True, returns the channel and the sorted labels for rows and columns.
@@ -45,6 +55,18 @@ def build(
     array([[0.66666667, 0.16666667, 0.16666667],
            [0.33333333, 0.33333333, 0.33333333],
            [0.16666667, 0.16666667, 0.66666667]])
+
+    We can also construct a geometric mechanism as a channel slice by specifying
+    the full domain boundaries. The boundary conditions are applied relative to
+    the full domain, not just the output domain:
+
+    >>> mechanism.geometric(
+    ...     0.5, [1, 2, 3], [1, 2, 3],
+    ...     domain_min=0, domain_max=4
+    ... ).dist
+    array([[0.33333333, 0.16666667, 0.08333333],
+           [0.16666667, 0.33333333, 0.16666667],
+           [0.08333333, 0.16666667, 0.33333333]])
     """
     # ========================================================================
     # Pre-conditions
@@ -55,7 +77,8 @@ def build(
 
     # The output domain must be a superset of the the input:
     input_domain = set(input_domain)
-    output_domain = input_domain if output_domain is None else set(output_domain)
+    if output_domain is None: output_domain = input_domain
+    else: output_domain = set(output_domain)
 
     if len(input_domain - output_domain) > 0:
         raise ValueError("Output must be a superset of input!")
@@ -70,27 +93,30 @@ def build(
     if not np.issubdtype(output_domain.dtype, np.integer):
         raise ValueError("Output domain must contain only integers.")
 
+    # Set domain boundaries
+    if domain_min is None: domain_min = output_domain[0]
+    if domain_max is None: domain_max = output_domain[-1]
+
+    is_slice = (
+        (domain_min < output_domain[0]) or
+        (domain_max > output_domain[-1])
+    )
+
     # ========================================================================
 
-    n_rows = input_domain.shape[0]
-    n_cols = output_domain.shape[0]
-
-    min_val = output_domain[0]
-    max_val = output_domain[-1]
-
     # Create a grid of distances |a - b|
-    # Broadcasting: input_domain (n_rows, 1) - output_domain (1, n_cols)
+    # Broadcasting: input_domain (n rows, 1) - output_domain (1, n cols)
     distances = input_domain[:, np.newaxis] - output_domain[np.newaxis, :]
     distances = np.abs(distances)
 
     # Calculate the base weights: alpha^|a - b| / (1 + alpha)
     base_weights = np.power(alpha, distances) / (1 + alpha)
 
-    # Apply the boundary condition:
+    # Apply the boundary condition using the full domain boundaries:
     # Interior points (min < b < max): multiply by (1 - alpha)
     # Boundary points (b = min or b = max): multiply by 1
-    is_interior = (output_domain > min_val) & (output_domain < max_val)
+    is_interior = (output_domain > domain_min) & (output_domain < domain_max)
     boundary_factor = np.where(is_interior, (1 - alpha), 1.0)
 
-    ch = Channel(base_weights * boundary_factor)
+    ch = Channel(base_weights * boundary_factor, is_slice)
     return (ch, input_domain, output_domain) if return_labels else ch

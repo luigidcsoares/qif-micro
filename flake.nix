@@ -5,7 +5,7 @@
   };
 
   outputs =
-    inputs@{ flake-parts, ... }:
+    inputs@{ flake-parts, self, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [
         "x86_64-linux"
@@ -14,10 +14,22 @@
         "x86_64-darwin"
       ];
       perSystem =
-        { pkgs, ... }:
         {
+          lib,
+          pkgs,
+          system,
+          ...
+        }:
+        {
+          _module.args.pkgs = import self.inputs.nixpkgs {
+            inherit system;
+            config.allowUnfreePredicate =
+              pkg: builtins.elem (lib.getName pkg) [ "github-copilot-cli" ];
+          };
+
           devShells.default = pkgs.mkShell {
             packages = [
+              pkgs.github-copilot-cli
               pkgs.pyright
               pkgs.python313
               pkgs.uv

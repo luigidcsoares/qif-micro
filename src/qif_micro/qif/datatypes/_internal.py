@@ -19,7 +19,7 @@ class _ProbabDistError(enum.Enum):
 @multimethod
 def _is_dist_valid(
     dist: Sequence[Slice],
-    is_slice: bool = False
+    is_slice: bool | np.bool = False
 ) -> _ProbabDistError:
     inner_data = [s.data if issparse(s) else s for s in dist]
     
@@ -37,5 +37,8 @@ def _is_dist_valid(
     
 
 @multimethod
-def _is_dist_valid(dist: Slice, is_slice: bool = False) -> _ProbabDistError:
+def _is_dist_valid(
+    dist: Slice,
+    is_slice: bool | np.bool = False
+) -> _ProbabDistError:
     return _is_dist_valid([dist], is_slice)
