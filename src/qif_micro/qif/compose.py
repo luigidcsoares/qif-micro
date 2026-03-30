@@ -1,7 +1,5 @@
 from collections.abc import Sequence
-from functools import reduce
 from itertools import chain
-from math import ceil
 
 import numpy as np
 import polars as pl

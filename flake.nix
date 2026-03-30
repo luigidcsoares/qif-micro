@@ -30,6 +30,7 @@
           devShells.default = pkgs.mkShell {
             packages = [
               pkgs.github-copilot-cli
+              pkgs.bashInteractive # For copilo
               pkgs.pyright
               pkgs.python313
               pkgs.uv
