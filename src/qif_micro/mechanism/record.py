@@ -14,11 +14,11 @@ from qif_micro.typing import AttrMechanism, DataFrame, Record
 
 @multimethod
 def build(
-    mechanisms: dict[str, AttrMechanism],
     input_domain: DataFrame,
     output_domain: DataFrame | None = None,
     record_col: str = "record_id",
-    entry_col: str = "entry_id"
+    entry_col: str = "entry_id",
+    **mechanisms: AttrMechanism,
 ) -> Channel | tuple[Channel, Sequence[Any]]:
     """
     This function generates a mechanism from records to records,
@@ -91,7 +91,7 @@ def build(
     We can apply the mechanism to a single attribute:
     
     >>> rr_q = partial(mechanism.random_response, p=2/3)
-    >>> mechanism.record({"q": rr_q}, records).dist.toarray()
+    >>> mechanism.record(records, q=rr_q).dist.toarray()
     array([[0.66666667, 0.        , 0.33333333, 0.        ],
            [0.        , 0.66666667, 0.        , 0.33333333],
            [0.33333333, 0.        , 0.66666667, 0.        ],
@@ -100,7 +100,7 @@ def build(
     We can also apply to multiple attributes:
     
     >>> rr_s = partial(mechanism.random_response, p=3/4)
-    >>> mechanism.record({"q": rr_q, "s": rr_s}, records).dist.toarray()
+    >>> mechanism.record(records, q=rr_q, s=rr_s).dist.toarray()
     array([[0.5       , 0.16666667, 0.25      , 0.08333333],
            [0.16666667, 0.5       , 0.08333333, 0.25      ],
            [0.25      , 0.08333333, 0.5       , 0.16666667],
@@ -116,7 +116,7 @@ def build(
     ...     {"record_id": 3, "entry_id": 0, "q": 1, "s": 1},
     ... ])
 
-    >>> mechanism.record({"q": rr_q, "s": rr_s}, records).dist.toarray()
+    >>> mechanism.record(records, q=rr_q, s=rr_s).dist.toarray()
     array([[0.5       , 0.16666667, 0.25      , 0.08333333],
            [0.16666667, 0.5       , 0.08333333, 0.25      ],
            [0.25      , 0.08333333, 0.5       , 0.16666667],
@@ -307,11 +307,11 @@ def build(
 
 @multimethod
 def build(
-    mechanisms: dict[str, AttrMechanism],
     input_domain: Iterable[Record],
     output_domain: Iterable[Record] | None = None,
     record_col: str = "record_id",
-    entry_col: str = "entry_id"
+    entry_col: str = "entry_id",
+    **mechanisms: AttrMechanism,
 ) -> Channel | tuple[Channel, Sequence[Any]]:
     as_df = lambda i, r:  pl.LazyFrame(r).with_columns(
         pl.lit(i).alias(record_col),
@@ -326,9 +326,9 @@ def build(
         output_domain = pl.concat(output_domain, how="diagonal")
 
     return build(
-        mechanisms,
         input_domain,
         output_domain,
         record_col=record_col,
-        entry_col=entry_col
+        entry_col=entry_col,
+        **mechanisms
     )

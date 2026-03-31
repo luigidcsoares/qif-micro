@@ -105,7 +105,7 @@ def build(
      
     >>> rr_q = partial(mechanism.random_response, p=2/3)
     >>> rr_s = partial(mechanism.random_response, p=3/4)
-    >>> m = mechanism.record({"q": rr_q, "s": rr_s}, records)
+    >>> m = mechanism.record(records, q=rr_q, s=rr_s)
 
     Finally, we define the input and output datasets that we want to analyse:
 
