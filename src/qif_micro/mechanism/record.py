@@ -308,8 +308,8 @@ def build(
 @multimethod
 def build(
     mechanisms: dict[str, AttrMechanism],
-    input_domain: list | tuple,
-    output_domain: list | tuple | None = None,
+    input_domain: Iterable[Record],
+    output_domain: Iterable[Record] | None = None,
     record_col: str = "record_id",
     entry_col: str = "entry_id"
 ) -> Channel | tuple[Channel, Sequence[Any]]:
