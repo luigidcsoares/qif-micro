@@ -13,17 +13,18 @@ from qif_micro.qif.datatypes import Channel, Joint, ProbabDist, Strategy
 
 from qif_micro.model import baseline
 from qif_micro.model._internal import _mk_long_dataset, _mk_records
-from qif_micro.typing import Dataset, Model
+from qif_micro.typing import DataFrame, Model
 from qif_micro._utils import _valid_columns, _filter_optional
 
 @multimethod
 def build(
-    datasets: Iterable[Dataset],
+    datasets: Iterable[DataFrame],
     agg_col: str = "agg",
     count_col: str = "count",
     sum_col: str = "sum",
     group_by_col: str | None = None,
     owner_col: str = "owner_id",
+    entry_col: str = "entry_id",
     return_owners: bool = False,
     return_labels: bool = False
 ) -> Model:
@@ -45,14 +46,14 @@ def build(
     ----------
     This function is overloaded:
 
-    - ``build(dataset, ...)``: accepts a single :class:`Dataset`
-    - ``build([d0, d1, ...], ...)``: accepts a sequence of :class:`Dataset`
+    - ``build(dataset, ...)``: accepts a single :class:`DataFrame`
+    - ``build([d0, d1, ...], ...)``: accepts a sequence of :class:`DataFrame`
 
-    dataset : Dataset
+    dataset : DataFrame
         A dataset containing owners, hints and sensitive attributes.
         (First overload)
 
-    datasets : Iterable[Dataset]
+    datasets : Iterable[DataFrame]
         One or more datasets containing owners, hints and sensitive attributes.
         (Second overload)
 
@@ -88,6 +89,7 @@ def build(
 
     >>> dataset = pl.DataFrame({
     ...     "owner_id": [0, 0, 1, 1, 2, 2, 2, 3, 3, 3, 3],
+    ...     "entry_id": [0, 1, 0, 1, 0, 1, 2, 0, 1, 2, 3],
     ...     "agg":      [0, 2, 1, 1, 0, 2, 0, 2, 1, 0, 1],
     ...     "group":    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
     ... })
@@ -114,6 +116,7 @@ def build(
 
     >>> dataset_rhs = pl.DataFrame({
     ...     "owner_id": [0, 1, 1, 2, 3],
+    ...     "entry_id": [0, 0, 1, 0, 0],
     ...     "agg":      [5, 5, 3, 0, 0],
     ...     "group":    [0, 0, 0, 0, 1]
     ... })
@@ -155,15 +158,21 @@ def build(
     #
     # If more than one dataset, they must contain the same owners.
     # =============================================================
-    datasets = list(datasets)
+    datasets = [df.lazy() for df in datasets]
     if len(datasets) == 0: raise ValueError("Empty sequence of datasets!")
 
     owners_expr = pl.col(owner_col).unique()
-    owners = set(datasets[0].select(owners_expr).to_series())
+    owners = set(
+         datasets[0]
+         .select(owners_expr)
+         .collect(engine="streaming")
+         .to_series()
+     )
 
+    orig_cols = _filter_optional([agg_col, group_by_col])
     for i, dataset in enumerate(datasets):
-        orig_cols = _filter_optional([agg_col, group_by_col])
-        ok, missing = _valid_columns(dataset, [owner_col, *orig_cols])
+        required = [owner_col, entry_col, *orig_cols]
+        ok, missing = _valid_columns(dataset, required)
 
         if not ok:
             msg = f"Missing the following attributes: {missing}!"
@@ -174,7 +183,13 @@ def build(
             msg = f"``agg_col`` ({agg_col}) must be integer!"
             raise ValueError(msg)
 
-        owners_i = set(dataset.select(owners_expr).to_series())
+        owners_i = set(
+             dataset
+             .select(owners_expr)
+             .collect(engine="streaming")
+             .to_series()
+         )
+
         if owners_i != owners:
             raise ValueError("All datasets must have the same owners!")
 
@@ -188,8 +203,8 @@ def build(
     # which means that we do not need to construct the whole adv model.
     joint_orig, map_owners, map_labels = baseline(
         # Dataset with ``agg_col`` as the hints   
-        datasets, list(_filter_optional([agg_col, group_by_col])),
-        owner_col=owner_col, return_owners=True, return_labels=True,
+        datasets, orig_cols, owner_col=owner_col, entry_col=entry_col,
+        return_owners=True, return_labels=True,
         # We disable opt_memory, so that we keep labels around for aligning.
         opt_memory=False
     )
@@ -202,13 +217,14 @@ def build(
     sum_expr = pl.col(agg_col).sum().alias(sum_col)
     count_expr = pl.len().alias(count_col)
     histogram_cols = _filter_optional([owner_col, group_by_col])
-    sort_cols = _filter_optional([owner_col, group_by_col, count_col, sum_col])
+    sort_cols = _filter_optional([owner_col, group_by_col])
 
     agg_entries_seq = [
-        d.group_by(histogram_cols).agg(count_expr, sum_expr)
+        df.group_by(histogram_cols).agg(count_expr, sum_expr)
         .sort(sort_cols)
-        .pipe(_mk_records, owner_col)
-        for d in datasets
+        .with_columns(pl.row_index(entry_col).over(owner_col))
+        .pipe(_mk_records, owner_col, entry_col)
+        for df in datasets
     ]
 
     long_agg_dataset = (
@@ -218,7 +234,8 @@ def build(
     
     pi_orig_dist = joint_orig.dist.sum(axis=1)
     pi_agg = ProbabDist(
-        pl.LazyFrame({"p": pi_orig_dist}).with_row_index("record")
+        pl.LazyFrame({"p": pi_orig_dist})
+        .with_row_index("record")
         .join(map_owners, on="record")
         .join(long_agg_dataset.lazy(), on=owner_col)
         .drop(owner_col)
@@ -385,17 +402,19 @@ def build(
 
 @multimethod
 def build(
-    dataset: Dataset,
+    dataset: DataFrame,
     agg_col: str = "agg",
     count_col: str = "count",
     sum_col: str = "sum",
     group_by_col: str | None = None,
     owner_col: str = "owner_id",
+    entry_col: str = "entry_id",
     return_owners: bool = False,
     return_labels: bool = False
 ) -> Model:
     return build(
         [dataset],
-        agg_col, count_col, sum_col, group_by_col, owner_col,
+        agg_col, count_col, sum_col, group_by_col,
+        owner_col, entry_col,
         return_owners, return_labels
     )

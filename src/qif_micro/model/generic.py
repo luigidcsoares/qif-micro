@@ -11,16 +11,16 @@ from qif_micro.qif.datatypes import Channel, Joint, ProbabDist, Strategy
 
 from qif_micro.model import baseline
 from qif_micro.model._internal import _mk_long_dataset, _mk_records
-from qif_micro.typing import Dataset, Model, Record
+from qif_micro.typing import DataFrame, Model, Record
 from qif_micro._utils import _valid_columns
 
 @multimethod
 def build(
     pi: ProbabDist,
-    records: pl.DataFrame,
+    records: DataFrame,
     mechanism: Channel,
-    baseline_dataset: Dataset,
-    sanitised_dataset: Dataset,
+    baseline_dataset: DataFrame,
+    sanitised_dataset: DataFrame,
     hint: Iterable[str],
     owner_col: str = "owner_id",
     record_col: str = "record_id",
@@ -43,7 +43,7 @@ def build(
     pi : ProbabDist
         Prior distribution over the domain of records.
 
-    records : pl.DataFrame
+    records : DataFrame
         A DataFrame where each row represents an entry in a record.
         The DataFrame must have columns ``record_col`` and ``entry_col``
         (by default ``"record_id"`` and ``"entry_id"``) identifying each
@@ -52,10 +52,10 @@ def build(
     mechanism : Channel
         The mechanism to apply to the records.
 
-    baseline_dataset : Dataset
+    baseline_dataset : DataFrame
         The baseline dataset containing the actual records.
 
-    sanitised_dataset : Dataset
+    sanitised_dataset : DataFrame
         The sanitised dataset after applying the mechanism.
 
     hint : str | iterable of str
@@ -173,6 +173,9 @@ def build(
     # ========================================================================
     # Pre-conditions
     # ========================================================================
+    records = records.lazy()
+    baseline_dataset = baseline_dataset.lazy()
+    sanitised_dataset = sanitised_dataset.lazy()
 
     # Standardise ``hint`` input
     hint = [hint] if isinstance(hint, str) else hint
@@ -184,7 +187,12 @@ def build(
 
     # We assume that each index i in the prior ``pi`` corresponds to the i-th
     # record in the domain of records. So, their length must be the same.
-    n_records = records[record_col].n_unique()
+    n_records = (
+        records
+        .select(pl.col(record_col).len())
+        .collect(engine="streaming")
+        .item()
+    )
     
     if pi.dist.shape[0] != n_records:
         raise ValueError("Incompatible prior ``pi`` and ``records``!")
@@ -203,7 +211,7 @@ def build(
     # also with respect to the the domain of records:
     # Convert DataFrame to list of records format first
     id_cols = [record_col, owner_col, entry_col]
-    attr_cols = [c for c in records.columns if c not in id_cols]
+    attr_cols = [c for c in records.collect_schema() if c not in id_cols]
     entry_expr = pl.col(entry_col).cast(pl.UInt64)
 
     records = (
@@ -231,7 +239,7 @@ def build(
 
     hyper_mechanism = qif.hyper(pi, mechanism)[1].dist.tocoo()
     data, rows, cols = hyper_mechanism.data, *hyper_mechanism.coords
-    hyper_mechanism_df = pl.DataFrame({"row": rows, "col": cols, "p": data})
+    hyper_mechanism_df = pl.LazyFrame({"row": rows, "col": cols, "p": data})
 
     transf_records = (
         baseline_records
@@ -245,7 +253,13 @@ def build(
     # a. The mapping input record -> output record is impossible
     # b. The input record is not possible according to the prior
     # c. The input or output records are not even in the domain
-    if transf_records["p"].has_nulls():
+    has_nulls = (
+        transf_records.select(pl.col("p").has_nulls())
+        .collect(engine="streaming")
+        .item()
+    )
+
+    if has_nulls:
         raise ValueError("Incompatible baseline and sanitised datasets!")
 
     # ========================================================================
@@ -253,13 +267,22 @@ def build(
     # The adversary's intermediate knowledge on a particular record is given
     # by the sum of the posterior probability of that record, given
     # the observed sanitised records, weighted by the dataset length.
-    p_expr = pl.col("p").sum() / sanitised_dataset.height
+    n_records = (
+        sanitised_dataset
+        .select(pl.len())
+        .collect(engine="streaming")
+        .item()
+    )
+
+    p_expr = pl.col("p").sum() / n_records
     delta_metadata = (
         sanitised_records
         .drop(owner_col, "record")
         .join(hyper_mechanism_df, left_on=record_col, right_on="col")
         .group_by("row").agg(p_expr)
         .join(records, left_on="row", right_on=record_col)
+        .sort("row")
+        .collect(engine="streaming")
     )
     
     # To construct the hint channel, we follow the same approach implemented
@@ -299,7 +322,7 @@ def build(
     # The metadata above gives us just a slice of the hint channel,
     # so it is not really a valid channel. But, we can construct from
     # it the baseline joint (which will be a valid joint):
-    p_expr = (pl.col("p") / baseline_records.height).alias("p")
+    p_expr = (pl.col("p") / n_records).alias("p")
 
     baseline_records = baseline_records.lazy().rename({record_col: "row"})
     baseline_joint_metadata = (
@@ -344,14 +367,14 @@ def build(
     pi: ProbabDist,
     records: list | tuple,
     mechanism: Channel,
-    baseline_dataset: Dataset,
-    sanitised_dataset: Dataset,
+    baseline_dataset: DataFrame,
+    sanitised_dataset: DataFrame,
     hint: Iterable[str],
     owner_col: str = "owner_id",
     record_col: str = "record_id",
     entry_col: str = "entry_id",
 ) -> Model:
-    as_df = lambda i, r:  pl.DataFrame(r).with_columns(
+    as_df = lambda i, r:  pl.LazyFrame(r).with_columns(
         pl.lit(i).alias(record_col),
         pl.row_index(entry_col)
     )

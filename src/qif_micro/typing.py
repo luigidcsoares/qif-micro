@@ -13,13 +13,8 @@ class AttrMechanism(Protocol):
         **kwargs: Any,
     ) -> Channel | tuple[Channel, Sequence[Any]]: ...
         
-type RecordEntry = dict[str, Any]
-type Record = list[RecordEntry]
 
-# Allow only DataFrame, to ensure determinism!
-type Dataset = pl.DataFrame
-
-# But keeping labels in memory is expensive, so use the lazy API:
+# Keeping labels in memory is expensive, so use the lazy API:
 type MapLabels = pl.LazyFrame
 type MapOwners = pl.LazyFrame
 
@@ -30,3 +25,8 @@ type BaselineModel = (
 )
 
 type Model = tuple[Joint, Strategy]
+
+type DataFrame = pl.DataFrame | pl.LazyFrame
+
+type RecordEntry = dict[str, Any]
+type Record = list[RecordEntry]

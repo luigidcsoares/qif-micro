@@ -2,27 +2,27 @@ from collections.abc import Iterable
 
 import polars as pl
 
-from qif_micro.typing import Dataset
+from qif_micro.typing import DataFrame
+from qif_micro._utils import _standard_cols
 
 def _mk_long_dataset(
-    records_it: Iterable[Dataset],
-    owner_col: str = "owner_id"
-) -> Dataset:
+    records: Iterable[DataFrame],
+    owner_col: str = "owner_id",
+) -> DataFrame:
     # First we construct the new the longitudinal records
     record_idx_expr = lambda i: (
-        pl.struct("record", pl.lit(i).alias("i"))
-        .alias("record")
+        pl.struct("record", pl.lit(i).alias("i")).alias("record")
     )
 
-    records_with_idx_it = (
-        m.select(owner_col, record_idx_expr(i))
-        for i, m in enumerate(records_it)
+    records_with_idx = (
+        df.select(owner_col, record_idx_expr(i))
+        for i, df in enumerate(records)
     )
 
     record_expr = pl.col("record").rank("dense") - 1
     return (
-        pl.concat(records_with_idx_it)
-        .group_by(owner_col, maintain_order=True)
+        pl.concat(records_with_idx)
+        .group_by(owner_col)
         # The longitudinal record will be a sequence of record ids.
         .agg("record")
         # We then transform the seq of ids into in a single id (row)
@@ -30,10 +30,12 @@ def _mk_long_dataset(
     )
 
 
-def _mk_records(dataset: Dataset, owner_col: str = "owner_id") -> Dataset:
-    record_entry_expr = pl.struct(pl.exclude(owner_col)).alias("record")
-    return (
-        dataset
-        .group_by(owner_col, maintain_order=True)
-        .agg(record_entry_expr)
-    )
+def _mk_records(
+    df: DataFrame,
+    owner_col: str = "owner_id",
+    entry_col: str = "entry_id"
+) -> DataFrame:
+    id_cols = [owner_col, entry_col]
+    attrs = sorted(c for c in df.collect_schema().names() if c not in id_cols)
+    record_entry_expr = pl.struct(entry_col, *attrs).alias("record")
+    return df.sort(*id_cols).group_by(owner_col).agg(record_entry_expr)

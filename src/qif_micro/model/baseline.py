@@ -11,18 +11,25 @@ from qif_micro import qif
 from qif_micro.qif.datatypes import Channel, Joint, ProbabDist
 
 from qif_micro.model._internal import _mk_long_dataset, _mk_records
-from qif_micro.typing import BaselineModel, Dataset
+from qif_micro.typing import BaselineModel, DataFrame
 from qif_micro._utils import _valid_columns
 
-def _mk_long_prior(long_dataset : Dataset) -> ProbabDist:
-    p_expr = (pl.len() / long_dataset.height).alias("p")
+def _mk_long_prior(long_dataset : DataFrame) -> ProbabDist:
+    n_records = (
+        long_dataset
+        .select(pl.col("record").len())
+        .collect(engine="streaming")
+        .item()
+    )
 
+    p_expr = (pl.len() / n_records).alias("p")
     prior_dist = (
         long_dataset
         .group_by("record")
         .agg(p_expr)
         .sort("record")
         .select("p")
+        .collect(engine="streaming")
         .to_numpy()
         .ravel()
     )
@@ -32,9 +39,10 @@ def _mk_long_prior(long_dataset : Dataset) -> ProbabDist:
 
 @multimethod
 def build(
-    datasets: Iterable[Dataset],
+    datasets: Iterable[DataFrame],
     hint: str | Iterable[str],
     owner_col: str = "owner_id",
+    entry_col: str = "entry_id",
     n_partitions: int = 1,
     opt_memory: bool = True,
     return_owners: bool = False,
@@ -47,14 +55,14 @@ def build(
     ----------
     This function is overloaded:
 
-    - ``build(dataset, ...)``: accepts a single :class:`Dataset`
-    - ``build([d0, d1, ...], ...): accepts a sequence of :class:`Dataset`
+    - ``build(dataset, ...)``: accepts a single :class:`DataFrame`
+    - ``build([d0, d1, ...], ...): accepts a sequence of :class:`DataFrame`
     
-    dataset : Dataset
+    dataset : DataFrame
         A dataset containing owners, hints and sensitive attributes.
         (First overload)
 
-    datasets : Iterable[Dataset]
+    datasets : Iterable[DataFrame]
         One or more datasets containing owners, hints and sensitive attributes.
         (Second overload)
 
@@ -102,6 +110,7 @@ def build(
 
     >>> dataset = pl.DataFrame({
     ...     "owner_id":  [0, 1, 2, 2, 3, 3],
+    ...     "entry_id":  [0, 0, 0, 1, 0, 1],
     ...     "hint":      [0, 0, 0, 1, 0, 1],
     ...     "sensitive": [0, 0, 0, 0, 1, 1]
     ... })
@@ -118,6 +127,7 @@ def build(
 
     >>> dataset_rhs = pl.DataFrame({
     ...     "owner_id":  [0, 1, 2, 3],
+    ...     "entry_id":  [0, 0, 0, 0],
     ...     "hint":      [0, 1, 0, 0],
     ...     "sensitive": [0, 0, 0, 1]
     ... })
@@ -169,7 +179,7 @@ def build(
     #
     # If more than one dataset, they must contain the same owners.
     # =============================================================
-    datasets = list(datasets)
+    datasets = [df.lazy() for df in datasets]
     if len(datasets) == 0: raise ValueError("Empty sequence of datasets!")
 
     # If only one dataset, dispatch to build(dataset, ...):
@@ -177,6 +187,7 @@ def build(
         datasets[0],
         hint,
         owner_col=owner_col,
+        entry_col=entry_col,
         n_partitions=n_partitions,
         opt_memory=opt_memory,
         return_owners=return_owners,
@@ -187,7 +198,12 @@ def build(
     hint = [hint] if isinstance(hint, str) else hint
 
     owners_expr = pl.col(owner_col).unique()
-    owners = set(datasets[0].select(owners_expr).to_series())
+    owners = set(
+         datasets[0]
+         .select(owners_expr)
+         .collect(engine="streaming")
+         .to_series()
+     )
 
     for i, dataset in enumerate(datasets):
         required = [owner_col, *hint]
@@ -196,7 +212,13 @@ def build(
         if not ok:
             raise ValueError(f"{i}-th dataset missing attributes: {missing}")
 
-        owners_i = set(dataset.select(owners_expr).to_series())
+        owners_i = set(
+            dataset
+            .select(owners_expr)
+            .collect(engine="streaming")
+            .to_series()
+        )
+
         if owners_i != owners:
             raise ValueError("All datasets must have the same owners!")
 
@@ -205,7 +227,7 @@ def build(
     # =============================================================
      
     # We begin by building the prior for the (possibly longitudinal) dataset:
-    records_it = (_mk_records(d, owner_col) for d in datasets)
+    records_it = (_mk_records(d, owner_col, entry_col) for d in datasets)
     long_dataset = _mk_long_dataset(records_it, owner_col)
     pi = _mk_long_prior(long_dataset.drop(owner_col))
 
@@ -217,6 +239,7 @@ def build(
             dataset,
             hint,
             owner_col=owner_col,
+            entry_col=entry_col,
             n_partitions=n_partitions,
             return_owners=True,
             return_labels=return_labels
@@ -326,9 +349,10 @@ def build(
 
 @multimethod
 def build(
-    dataset: Dataset,
+    dataset: DataFrame,
     hint: Iterable[str],
     owner_col: str = "owner_id",
+    entry_col: str = "entry_id",
     n_partitions: int = 1,
     opt_memory: bool = True,
     return_owners: bool = False,
@@ -340,10 +364,12 @@ def build(
     # corresponds to one of the record's attributes, and there must
     # be a special column that identified the owner of that record.
     # =============================================================
+    dataset = dataset.lazy()
+    
     # Standardise ``hint`` input
     hint = [hint] if isinstance(hint, str) else hint
 
-    required = [owner_col, *hint]
+    required = [owner_col, entry_col, *hint]
     ok, missing = _valid_columns(dataset, required)
 
     if not ok: raise ValueError(f"Dataset missing attributes: {missing}")
@@ -352,7 +378,7 @@ def build(
     # End pre-conditions
     # =============================================================
 
-    records = _mk_records(dataset, owner_col)
+    records = _mk_records(dataset, owner_col, entry_col)
     long_dataset = _mk_long_dataset([records], owner_col)
     pi = _mk_long_prior(long_dataset.drop(owner_col))
 
@@ -362,7 +388,8 @@ def build(
     p_expr = (pl.len() / pl.col("len").first()).alias("p")
 
     ch_metadata = (
-        dataset.join(long_dataset, on=owner_col)
+        dataset
+        .join(long_dataset, on=owner_col)
         .select(owner_col, "record", hint_label_expr)
         .group_by(owner_col)
         .agg(pl.col("record").first(), "hint_label", len_expr)
@@ -379,6 +406,7 @@ def build(
 
         # and transform the hint labels into col indices:
         .with_columns(hint_expr)
+        .collect(engine="streaming")
     )
 
     n_rows = ch_metadata.select("record").max().item() + 1

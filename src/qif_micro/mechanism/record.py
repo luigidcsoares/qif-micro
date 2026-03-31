@@ -10,13 +10,13 @@ from scipy.sparse import coo_array, csr_array
 
 from qif_micro import qif
 from qif_micro.qif.datatypes import Channel
-from qif_micro.typing import AttrMechanism, Record
+from qif_micro.typing import AttrMechanism, DataFrame, Record
 
 @multimethod
 def build(
     mechanisms: dict[str, AttrMechanism],
-    input_domain: pl.DataFrame,
-    output_domain: pl.DataFrame | None = None,
+    input_domain: DataFrame,
+    output_domain: DataFrame | None = None,
     record_col: str = "record_id",
     entry_col: str = "entry_id"
 ) -> Channel | tuple[Channel, Sequence[Any]]:
@@ -26,7 +26,7 @@ def build(
 
     This function is overloaded:
 
-    - ``build(mechanisms, input_domain, ...)``: accepts a :class:`pl.DataFrame`
+    - ``build(mechanisms, input_domain, ...)``: accepts a :class:`DataFrame`
     - ``build(mechanisms, input_domain, ...)``: accepts an iterable of records
 
     TODOS
@@ -43,7 +43,7 @@ def build(
         An iterable of records (list of dicts).
         (First overload)
 
-    input_domain : pl.DataFrame
+    input_domain : DataFrame
         A DataFrame where each row represents an entry in a record.
         The DataFrame must have columns ``record_col`` and ``entry_col``
         (by default ``"record_id"`` and ``"entry_id"``) identifying each
@@ -55,7 +55,7 @@ def build(
         If omitted, we assume it is the same as ``input_domain``.
         (First overload)
 
-    output_domain: pl.DataFrame, optional (default: None)
+    output_domain: DataFrame, optional (default: None)
         A DataFrame with the same structure as ``input_domain``.
         If omitted, we assume it is the same as ``input_domain``.
         (Second overload)
@@ -131,6 +131,7 @@ def build(
     # Group the DataFrame by record and entry
     input_domain = (
         input_domain
+        .lazy()
         .sort(record_col, entry_col)
         .group_by(record_col)
         .agg(pl.all())
@@ -139,6 +140,7 @@ def build(
 
     output_domain = (
         output_domain
+        .lazy()
         .sort(record_col, entry_col)
         .group_by(record_col)
         .agg(pl.all())
@@ -146,8 +148,8 @@ def build(
     )
 
     id_cols = {record_col, entry_col}
-    attrs =  set(output_domain.schema.keys()) - id_cols
-    for input_attr in set(input_domain.schema.keys()) - id_cols:
+    attrs = set(output_domain.collect_schema()) - id_cols
+    for input_attr in set(input_domain.collect_schema()) - id_cols:
         if input_attr not in attrs:
             raise ValueError(f"Input and output incompatible: {input_attr}")
 
@@ -156,13 +158,23 @@ def build(
         if transform_attr not in attrs:
             raise ValueError(f"{transform_attr} is not a valid attribute!")
 
-    n_input = input_domain.height
-    if n_input == 0:
-        raise ValueError("Input domain cannot be empty!")
+    n_input = (
+        input_domain
+        .select(pl.col(record_col).n_unique())
+        .collect(engine="streaming")
+        .item()
+    )
 
-    n_output = output_domain.height
-    if n_output == 0:
-        raise ValueError("Output domain cannot be empty!")
+    if n_input == 0: raise ValueError("Input domain cannot be empty!")
+
+    n_output = (
+        output_domain
+        .select(pl.col(record_col).n_unique())
+        .collect(engine="streaming")
+        .item()
+    )
+
+    if n_output == 0: raise ValueError("Output domain cannot be empty!")
 
     # If there are no mechanisms, this is just the identity channel.
     transform_attrs = list(mechanisms.keys())
@@ -174,20 +186,47 @@ def build(
     preserve_attrs = attrs - set(transform_attrs)
     def _build_for(attr) -> Channel:
         # Min and max record length comes from the input domain
-        min_record_len = input_domain[attr].list.len().min()
-        max_record_len = input_domain[attr].list.len().max()
+        min_record_len = (
+            input_domain
+            .select(pl.col(attr).list.len().min())
+            .collect(engine="streaming")
+            .item()
+        )
+
+        max_record_len = (
+            input_domain
+            .select(pl.col(attr).list.len().max())
+            .collect(engine="streaming")
+            .item()
+        )
 
         # If the user has not provided the attr input or output domains,
         # we derive them from the domain of records.
         m = mechanisms[attr]
         param = signature(mechanisms[attr]).parameters["input_domain"]
         if param.default is param.empty:
-            attr_domain = input_domain[attr].explode().unique().to_list()
+            attr_domain = (
+                input_domain
+                .select(pl.col(attr))
+                .explode(attr)
+                .unique()
+                .collect(engine="streaming")
+                .to_series()
+                .to_list()
+            )
             m = partial(m, input_domain=attr_domain)
         
         param = signature(mechanisms[attr]).parameters["output_domain"]
         if param.default is param.empty:
-            attr_domain = output_domain[attr].explode().unique().to_list()
+            attr_domain = (
+                output_domain
+                .select(pl.col(attr))
+                .explode(attr)
+                .unique()
+                .collect(engine="streaming")
+                .to_series()
+                .to_list()
+            )
             m = partial(m, output_domain=attr_domain)
 
         ch, row_labels, col_labels = m(return_labels=True)
@@ -217,6 +256,7 @@ def build(
             .with_columns(len_expr, pl.col(attr).alias("row_label"))
             .explode("row_label")
             .with_columns(entry_expr)
+            .collect(engine="streaming")
             .partition_by("len", as_dict=True)
         )
 
@@ -225,6 +265,7 @@ def build(
             .with_columns(len_expr, pl.col(attr).alias("col_label"))
             .explode("col_label")
             .with_columns(entry_expr)
+            .collect(engine="streaming")
             .partition_by("len", as_dict=True)
         )
 
@@ -271,7 +312,7 @@ def build(
     record_col: str = "record_id",
     entry_col: str = "entry_id"
 ) -> Channel | tuple[Channel, Sequence[Any]]:
-    as_df = lambda i, r:  pl.DataFrame(r).with_columns(
+    as_df = lambda i, r:  pl.LazyFrame(r).with_columns(
         pl.lit(i).alias(record_col),
         pl.row_index(entry_col)
     )

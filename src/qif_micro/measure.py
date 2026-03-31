@@ -39,6 +39,7 @@ def linkage_risk(adv_model: BaselineModel) -> np.floating:
 
     >>> dataset = pl.DataFrame({
     ...     "owner_id": [0, 0, 1, 1, 2, 2, 2, 3, 3, 3, 3],
+    ...     "entry_id": [0, 1, 0, 1, 0, 1, 2, 0, 1, 2, 3],
     ...     "agg":      [0, 2, 1, 1, 0, 2, 0, 2, 1, 0, 1],
     ...     "group":    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
     ... })
