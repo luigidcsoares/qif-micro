@@ -397,9 +397,9 @@ def build(
 
         # Drop possible duplicate records from the dataset,
         # as in the case of the channel we count things within records
-        .unique()
+        .unique(subset="record")
         .explode("hint_label")
-
+            
         # Then, we compute the probability of each cell in the channel
         .group_by("record", "hint_label")
         .agg(p_expr)
@@ -430,7 +430,7 @@ def build(
     n_partitions = max(0, min(n_partitions, n_cols))
     part_expr = (pl.col("hint") % n_partitions).alias("part")
 
-    partitions =  ch_metadata.with_columns(part_expr).partition_by("part")
+    partitions = ch_metadata.with_columns(part_expr).partition_by("part")
 
     ch_dist = [_mk_ch_dist(part_metadata) for part_metadata in partitions]
     ch_dist = ch_dist if len(ch_dist) > 1 else ch_dist[0]
