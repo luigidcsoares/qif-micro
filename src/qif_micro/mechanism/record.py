@@ -231,11 +231,12 @@ def build(
 
         ch, row_labels, col_labels = m(return_labels=True)
 
-        domain_size = len(attr_domain)
-        map_row_labels = {"row_label": row_labels, "row": range(domain_size)}
+        n_rows = len(row_labels)
+        map_row_labels = {"row_label": row_labels, "row": range(n_rows)}
         map_row_labels = pl.LazyFrame(map_row_labels)
 
-        map_col_labels = {"col_label": col_labels, "col": range(domain_size)}
+        n_cols = len(col_labels)
+        map_col_labels = {"col_label": col_labels, "col": range(n_cols)}
         map_col_labels = pl.LazyFrame(map_col_labels)
          
         ch_dist = coo_array(ch.dist)
