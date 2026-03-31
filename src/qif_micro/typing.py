@@ -1,10 +1,11 @@
 from collections.abc import Iterable, Sequence
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 import polars as pl
 
 from qif_micro.qif.datatypes import Channel, Joint, Strategy
 
+@runtime_checkable
 class AttrMechanism(Protocol):
     def __call__(
         self,
@@ -13,7 +14,7 @@ class AttrMechanism(Protocol):
     ) -> Channel | tuple[Channel, Sequence[Any]]: ...
         
 type RecordEntry = dict[str, Any]
-type Record = list[RecodEntry]
+type Record = list[RecordEntry]
 
 # Allow only DataFrame, to ensure determinism!
 type Dataset = pl.DataFrame

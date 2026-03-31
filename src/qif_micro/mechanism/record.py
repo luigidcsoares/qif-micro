@@ -5,20 +5,29 @@ from typing import Any
 
 import polars as pl
 
+from multimethod import multimethod
 from scipy.sparse import coo_array, csr_array
 
 from qif_micro import qif
 from qif_micro.qif.datatypes import Channel
 from qif_micro.typing import AttrMechanism, Record
 
+@multimethod
 def build(
     mechanisms: dict[str, AttrMechanism],
-    input_domain: Iterable[Record],
-    output_domain: Iterable[Record] | None = None
+    input_domain: pl.DataFrame,
+    output_domain: pl.DataFrame | None = None,
+    record_col: str = "record_id",
+    entry_col: str = "entry_id"
 ) -> Channel | tuple[Channel, Sequence[Any]]:
     """
     This function generates a mechanism from records to records,
     based on attribute-level mechanisms.
+
+    This function is overloaded:
+
+    - ``build(mechanisms, input_domain, ...)``: accepts a :class:`pl.DataFrame`
+    - ``build(mechanisms, input_domain, ...)``: accepts an iterable of records
 
     TODOS
     -----
@@ -31,30 +40,46 @@ def build(
         equivalent to applying the identity mechanism onto each attribute.
         
     input_domain : Iterable[Record]
-        A (sub-)domain of records, where each record is a list of dicts.
-        This need not be the entire domain; it may be a sub-domain with
-        only the records that the adversary believes that are possible.
+        An iterable of records (list of dicts).
+        (First overload)
 
-    output_domain: Iterable[Record], optional (default: None)
-        A (sub-)domain of records, where each record is a list of dicts.
-        This need not be the entire domain; it may be a sub-domain with
-        only the records that the adversary believes that are possible.
+    input_domain : pl.DataFrame
+        A DataFrame where each row represents an entry in a record.
+        The DataFrame must have columns ``record_col`` and ``entry_col``
+        (by default ``"record_id"`` and ``"entry_id"``) identifying each
+        record and entry. Other columns represent the attributes.
+        (Second overload)
 
+    output_domain : Iterable[Record], optional (default: None)
+        An iterable of records with the same structure as ``input_domain``.
         If omitted, we assume it is the same as ``input_domain``.
+        (First overload)
+
+    output_domain: pl.DataFrame, optional (default: None)
+        A DataFrame with the same structure as ``input_domain``.
+        If omitted, we assume it is the same as ``input_domain``.
+        (Second overload)
+
+    record_col : str, optional (default: ``"record_id"``)
+        Column name for the record identifier.
+
+    entry_col : str, optional (default: ``"entry_id"``)
+        Column name for the entry identifier within each record.
 
     Returns
     -------
     Channel
         A channel matrix modelling the mechanism, where the i-th row
-        corresponds to the i-th record in ``records``; similarly, the
-        i-th column correspond to the i-th record in ``records``.
+        corresponds to the i-th record in the input domain; similarly,
+        the i-th column correspond to the i-th record in the output
+        domain.
     
     Examples
     --------
     >>> from functools import partial
     >>> from qif_micro import mechanism
 
-    Consider the following domain of records:
+    Consider the following domain of records as a list of lists:
     
     >>> records = [
     ...     [{"q": 0, "s": 0}],
@@ -63,7 +88,7 @@ def build(
     ...     [{"q": 1, "s": 1}],
     ... ]
 
-    Then we can apply the mechanism to a single attribute:
+    We can apply the mechanism to a single attribute:
     
     >>> rr_q = partial(mechanism.random_response, p=2/3)
     >>> mechanism.record({"q": rr_q}, records).dist.toarray()
@@ -80,34 +105,49 @@ def build(
            [0.16666667, 0.5       , 0.08333333, 0.25      ],
            [0.25      , 0.08333333, 0.5       , 0.16666667],
            [0.08333333, 0.25      , 0.16666667, 0.5       ]])
+
+    The domain of records can also be a DataFrame, in which case each row
+    represents an entry and must have ``record_id`` and ``entry_id`` columns:
+
+    >>> records = pl.from_records([
+    ...     {"record_id": 0, "entry_id": 0, "q": 0, "s": 0},
+    ...     {"record_id": 1, "entry_id": 0, "q": 0, "s": 1},
+    ...     {"record_id": 2, "entry_id": 0, "q": 1, "s": 0},
+    ...     {"record_id": 3, "entry_id": 0, "q": 1, "s": 1},
+    ... ])
+
+    >>> mechanism.record({"q": rr_q, "s": rr_s}, records).dist.toarray()
+    array([[0.5       , 0.16666667, 0.25      , 0.08333333],
+           [0.16666667, 0.5       , 0.08333333, 0.25      ],
+           [0.25      , 0.08333333, 0.5       , 0.16666667],
+           [0.08333333, 0.25      , 0.16666667, 0.5       ]])
     """ 
     # ========================================================================
     # Pre-conditions
     # ========================================================================
 
-    # Attributes must be consistent within records and across all records.
-    # To deal with that, we consider missing attributes as null.
-    as_df = lambda i, r: pl.DataFrame(r).with_columns(pl.lit(i).alias("rid"))
-
-    output_domain = input_domain if output_domain is None else output_domain
-    output_domain = (as_df(i, r) for i, r in enumerate(output_domain))
-    output_domain = (
-        pl.concat(output_domain, how="diagonal")
-        .group_by("rid")
-        .agg(pl.all())
-        .unique()
-    )
-
-    input_domain = (as_df(i, r) for i, r in enumerate(input_domain))
+    if output_domain is None: output_domain = input_domain
+        
+    # Group the DataFrame by record and entry
     input_domain = (
-        pl.concat(input_domain, how="diagonal")
-        .group_by("rid")
+        input_domain
+        .sort(record_col, entry_col)
+        .group_by(record_col)
         .agg(pl.all())
         .unique()
     )
 
-    attrs = set(output_domain.schema.keys()) - {"rid"}
-    for input_attr in set(input_domain.schema.keys()) - {"rid"}:
+    output_domain = (
+        output_domain
+        .sort(record_col, entry_col)
+        .group_by(record_col)
+        .agg(pl.all())
+        .unique()
+    )
+
+    id_cols = {record_col, entry_col}
+    attrs =  set(output_domain.schema.keys()) - id_cols
+    for input_attr in set(input_domain.schema.keys()) - id_cols:
         if input_attr not in attrs:
             raise ValueError(f"Input and output incompatible: {input_attr}")
 
@@ -117,10 +157,12 @@ def build(
             raise ValueError(f"{transform_attr} is not a valid attribute!")
 
     n_input = input_domain.height
-    if n_input == 0: raise ValueError("Input domain cannot be empty!")
+    if n_input == 0:
+        raise ValueError("Input domain cannot be empty!")
 
     n_output = output_domain.height
-    if n_output == 0: raise ValueError("Output domain cannot be empty!")
+    if n_output == 0:
+        raise ValueError("Output domain cannot be empty!")
 
     # If there are no mechanisms, this is just the identity channel.
     transform_attrs = list(mechanisms.keys())
@@ -168,7 +210,7 @@ def build(
         )
         
         len_expr = pl.col(attr).list.len().alias("len")
-        entry_expr = pl.row_index("entry_id").over("rid")
+        entry_expr = pl.row_index(entry_col).over(record_col)
         
         input_entries = (
             input_domain
@@ -186,7 +228,7 @@ def build(
             .partition_by("len", as_dict=True)
         )
 
-        join_cols = subrecord_cols = preserve_attrs | {"col_label", "entry_id"}
+        join_cols = preserve_attrs | {"col_label", entry_col}
         ch_metadata = []
         
         for l in input_entries.keys():
@@ -197,7 +239,7 @@ def build(
                 input_part
                 .join(mechanism_df, on="row_label")
                 .join(output_part, on=join_cols)
-                .group_by("rid", "rid_right")
+                .group_by(record_col, f"{record_col}_right")
                 .agg(pl.col("p").product())
             )
 
@@ -206,8 +248,8 @@ def build(
         ch_metadata = pl.concat(ch_metadata).collect(engine="streaming")
         
         data = ch_metadata["p"].to_numpy()
-        rows = ch_metadata["rid"].to_numpy()
-        cols = ch_metadata["rid_right"].to_numpy()
+        rows = ch_metadata[record_col].to_numpy()
+        cols = ch_metadata[f"{record_col}_right"].to_numpy()
 
         shape = (n_input, n_output)
         ch_dist = coo_array((data, (rows, cols)), shape=shape)
@@ -219,3 +261,32 @@ def build(
     for attr in transform_attrs[1:]: ch_dist *= _build_for(attr)
 
     return Channel(ch_dist, is_slice=True)
+
+
+@multimethod
+def build(
+    mechanisms: dict[str, AttrMechanism],
+    input_domain: list | tuple,
+    output_domain: list | tuple | None = None,
+    record_col: str = "record_id",
+    entry_col: str = "entry_id"
+) -> Channel | tuple[Channel, Sequence[Any]]:
+    as_df = lambda i, r:  pl.DataFrame(r).with_columns(
+        pl.lit(i).alias(record_col),
+        pl.row_index(entry_col)
+    )
+
+    input_domain = (as_df(i, r) for i, r in enumerate(input_domain))
+    input_domain = pl.concat(input_domain, how="diagonal")
+
+    if output_domain is not None:
+        output_domain = (as_df(i, r) for i, r in enumerate(output_domain))
+        output_domain = pl.concat(output_domain, how="diagonal")
+
+    return build(
+        mechanisms,
+        input_domain,
+        output_domain,
+        record_col=record_col,
+        entry_col=entry_col
+    )

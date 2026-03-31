@@ -14,19 +14,67 @@ from qif_micro.model._internal import _mk_long_dataset, _mk_records
 from qif_micro.typing import Dataset, Model, Record
 from qif_micro._utils import _valid_columns
 
+@multimethod
 def build(
     pi: ProbabDist,
-    records: Sequence[Record],
+    records: pl.DataFrame,
     mechanism: Channel,
     baseline_dataset: Dataset,
     sanitised_dataset: Dataset,
     hint: Iterable[str],
     owner_col: str = "owner_id",
+    record_col: str = "record_id",
+    entry_col: str = "entry_id",
 ) -> Model:
     """
+    This function builds a generic adversary model from records and datasets.
+
+    This function is overloaded:
+
+    - ``build(pi, records, ...)``: accepts a :class:`pl.DataFrame`
+    - ``build(pi, records, ...)``: accepts an iterable of records
+
     TODOS
     -----
     Support longitudinal and multiple mechanisms.
+
+    Parameters
+    ----------
+    pi : ProbabDist
+        Prior distribution over the domain of records.
+
+    records : pl.DataFrame
+        A DataFrame where each row represents an entry in a record.
+        The DataFrame must have columns ``record_col`` and ``entry_col``
+        (by default ``"record_id"`` and ``"entry_id"``) identifying each
+        record and entry. Other columns represent the record attributes.
+
+    mechanism : Channel
+        The mechanism to apply to the records.
+
+    baseline_dataset : Dataset
+        The baseline dataset containing the actual records.
+
+    sanitised_dataset : Dataset
+        The sanitised dataset after applying the mechanism.
+
+    hint : str | iterable of str
+        Column names that represent the adversary's auxiliary information.
+
+    owner_col : str, optional (default: "owner_id")
+        Column name for the owner identifier.
+
+    record_col : str, optional (default: "record_id")
+        Column name for the record identifier.
+
+    entry_col : str, optional (default: "entry_id")
+        Column name for the entry identifier within each record.
+
+    Returns
+    -------
+    Model
+        A tuple (baseline_joint, adv_st) representing the baseline joint
+        and adversary strategy.
 
     Examples
     --------
@@ -63,19 +111,20 @@ def build(
 
     >>> b_dataset = pl.DataFrame({
     ...     "owner_id": [0, 1, 2, 3],
+    ...     "entry_id": [0, 0, 0, 0],
     ...     "q":        [0, 0, 1, 2],
     ...     "s":        [0, 0, 0, 1]
     ... })
 
     >>> s_dataset = pl.DataFrame({
     ...     "owner_id": [0, 1, 2, 3],
+    ...     "entry_id": [0, 0, 0, 0],
     ...     "q":        [0, 0, 1, 1],
     ...     "s":        [0, 0, 1, 1]
     ... })
     
-    >>> baseline_joint, adv_st = model.generic(
-    ...     pi, records, m, b_dataset, s_dataset, ["q"]
-    ... )
+    >>> result = model.generic(pi, records, m, b_dataset, s_dataset, ["q"])
+    >>> baseline_joint, adv_st = result
 
     >>> baseline_joint.dist.toarray()
     array([[0.5 , 0.  , 0.  ],
@@ -92,21 +141,56 @@ def build(
     array([[1., 0., 0., 0., 0., 0.],
            [0., 0., 0., 1., 0., 0.],
            [0., 0., 0., 0., 0., 1.]])
+
+    The domain of records can also be a DataFrame, in which case each row
+    represents an entry and must have ``record_id`` and ``entry_id`` columns:
+
+    >>> records = pl.from_records([
+    ...     {"record_id": 0, "entry_id": 0, "q": 0, "s": 0},
+    ...     {"record_id": 1, "entry_id": 0, "q": 0, "s": 1},
+    ...     {"record_id": 2, "entry_id": 0, "q": 1, "s": 0},
+    ...     {"record_id": 3, "entry_id": 0, "q": 1, "s": 1},
+    ...     {"record_id": 4, "entry_id": 0, "q": 2, "s": 0},
+    ...     {"record_id": 5, "entry_id": 0, "q": 2, "s": 1},
+    ... ])
+
+    >>> result = model.generic(pi, records, m, b_dataset, s_dataset, ["q"])
+    >>> baseline_joint, adv_st = result
+           
+    >>> baseline_joint.dist.toarray()
+    array([[0.5 , 0.  , 0.  ],
+           [0.  , 0.  , 0.  ],
+           [0.  , 0.25, 0.  ],
+           [0.  , 0.  , 0.  ],
+           [0.  , 0.  , 0.  ],
+           [0.  , 0.  , 0.25]])
+
+    >>> adv_st.dist.toarray()
+    array([[1., 0., 0., 0., 0., 0.],
+           [0., 0., 0., 1., 0., 0.],
+           [0., 0., 0., 0., 0., 1.]])
     """
     # ========================================================================
     # Pre-conditions
     # ========================================================================
 
-    # We assume that each index i in the prior ``pi`` corresponds to the i-th
-    # record in the domain of records. So, their length must be the same.
-    if pi.dist.shape[0] != len(records):
-        raise ValueError("Incompatible prior ``pi`` and ``records``!")
-
     # Standardise ``hint`` input
     hint = [hint] if isinstance(hint, str) else hint
 
+    # Check the required attributes for the domain of records
+    required = [record_col, entry_col, *hint]
+    ok, missing = _valid_columns(records, required)
+    if not ok: raise ValueError(f"Baseline missing attributes: {missing}")
+
+    # We assume that each index i in the prior ``pi`` corresponds to the i-th
+    # record in the domain of records. So, their length must be the same.
+    n_records = records[record_col].n_unique()
+    
+    if pi.dist.shape[0] != n_records:
+        raise ValueError("Incompatible prior ``pi`` and ``records``!")
+
     # Check the required attributes for the baseline and sanitised datasets
-    required = [owner_col, *hint]
+    required = [owner_col, entry_col, *hint]
 
     ok, missing = _valid_columns(baseline_dataset, required)
     if not ok: raise ValueError(f"Baseline missing attributes: {missing}")
@@ -117,18 +201,32 @@ def build(
     # We must also be sure that the baseline and sanitised datasets are
     # compatible, according to the mechanism under analysis, and
     # also with respect to the the domain of records:
-    as_df = lambda i, r: pl.DataFrame({"record": [r], "rid": [i]})
-    records = (as_df(i, r) for i, r in enumerate(records))
-    records_df = pl.concat(records, how="vertical_relaxed")
+    # Convert DataFrame to list of records format first
+    id_cols = [record_col, owner_col, entry_col]
+    attr_cols = [c for c in records.columns if c not in id_cols]
+    entry_expr = pl.col(entry_col).cast(pl.UInt64)
+
+    records = (
+        records
+        .sort(record_col, entry_col)
+        .select(record_col, entry_expr, *attr_cols)
+        .pipe(_mk_records, record_col)
+    )
 
     baseline_records = (
-        _mk_records(baseline_dataset, owner_col)
-        .join(records_df, on="record", how="left")
+        baseline_dataset
+        .sort(owner_col, entry_col)
+        .select(owner_col, entry_expr, *attr_cols)
+        .pipe(_mk_records, owner_col)
+        .join(records, on="record", how="left")
     )
     
     sanitised_records = (
-        _mk_records(sanitised_dataset, owner_col)
-        .join(records_df, on="record", how="left")
+        sanitised_dataset
+        .sort(owner_col, entry_col)
+        .select(owner_col, entry_expr, *attr_cols)
+        .pipe(_mk_records, owner_col)
+        .join(records, on="record", how="left")
     )
 
     hyper_mechanism = qif.hyper(pi, mechanism)[1].dist.tocoo()
@@ -138,7 +236,7 @@ def build(
     transf_records = (
         baseline_records
         .join(sanitised_records, on=owner_col)
-        .rename({"rid": "row", "rid_right": "col"})
+        .rename({record_col: "row", record_col + "_right": "col"})
         .rename({"record": "row_label", "record_right": "col_label"})
         .join(hyper_mechanism_df, on=["row", "col"], how="left")
     )
@@ -157,11 +255,11 @@ def build(
     # the observed sanitised records, weighted by the dataset length.
     p_expr = pl.col("p").sum() / sanitised_dataset.height
     delta_metadata = (
-        sanitised_records.drop(owner_col, "record")
-        .join(hyper_mechanism_df, left_on="rid", right_on="col")
+        sanitised_records
+        .drop(owner_col, "record")
+        .join(hyper_mechanism_df, left_on=record_col, right_on="col")
         .group_by("row").agg(p_expr)
-        .join(records_df, left_on="row", right_on="rid")
-        .sort("row")
+        .join(records, left_on="row", right_on=record_col)
     )
     
     # To construct the hint channel, we follow the same approach implemented
@@ -177,26 +275,25 @@ def build(
     len_expr = pl.col("record").list.len().alias("len")
     p_expr = (pl.len() / pl.col("len").first()).alias("p")
     
-    valid_hints = baseline_dataset.select(hint_label_expr).unique()
+    valid_hints = baseline_dataset.lazy().select(hint_label_expr).unique()
     ch_metadata = (
-        delta_metadata.with_columns(len_expr)
+        delta_metadata.lazy()
+        .with_columns(len_expr)
         .explode("record")
         .select("row", extract_hints_expr, "len")
         .select("row", hint_label_expr, "len")
         
         # Filter hints so that we get only the ones that are possible
         # in practice, according to the baseline.
-        #
-        # Make sure to maintain order to preserve the sort by rows
-        .join(valid_hints, on="hint_label", maintain_order="left")
+        .join(valid_hints, on="hint_label")
 
         # Compute the probability of each cell in the channel.
-        # Maintain order to preserve the sort by rows and the hint order.
-        .group_by("row", "hint_label", maintain_order=True)
+        .group_by("row", "hint_label")
         .agg(p_expr)
 
         # and transform the hint labels into col indices:
         .select("row", dense_row_expr, hint_expr, "p")
+        .collect(engine="streaming")
     )
     
     # The metadata above gives us just a slice of the hint channel,
@@ -204,15 +301,14 @@ def build(
     # it the baseline joint (which will be a valid joint):
     p_expr = (pl.col("p") / baseline_records.height).alias("p")
 
-    baseline_records = baseline_records.select(pl.col("rid").alias("row"))
+    baseline_records = baseline_records.lazy().rename({record_col: "row"})
     baseline_joint_metadata = (
-        ch_metadata
-        # Maintain order to preserve the sort by rows and the hint order.
-        .join(baseline_records, on="row", maintain_order="left")
+        ch_metadata.lazy()
+        .join(baseline_records, on="row")
         .with_columns(p_expr)
-        # Maintain order to preserve the sort by rows and the hint order.
-        .group_by("row", "hint", maintain_order=True)
+        .group_by("row", "hint")
         .agg(pl.col("p").sum(), pl.col("dense_row").first())
+        .collect(engine="streaming")
     )
 
     n_rows = delta_metadata.height
@@ -241,3 +337,36 @@ def build(
     adv_st = qif.strategy(adv_joint)
 
     return baseline_joint, adv_st
+
+
+@multimethod
+def build(
+    pi: ProbabDist,
+    records: list | tuple,
+    mechanism: Channel,
+    baseline_dataset: Dataset,
+    sanitised_dataset: Dataset,
+    hint: Iterable[str],
+    owner_col: str = "owner_id",
+    record_col: str = "record_id",
+    entry_col: str = "entry_id",
+) -> Model:
+    as_df = lambda i, r:  pl.DataFrame(r).with_columns(
+        pl.lit(i).alias(record_col),
+        pl.row_index(entry_col)
+    )
+
+    records = (as_df(i, r) for i, r in enumerate(records))
+    records = pl.concat(records, how="diagonal")
+
+    return build(
+        pi,
+        records,
+        mechanism,
+        baseline_dataset,
+        sanitised_dataset,
+        hint,
+        owner_col=owner_col,
+        record_col=record_col,
+        entry_col=entry_col,
+    )
