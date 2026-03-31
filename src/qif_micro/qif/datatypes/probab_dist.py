@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 import numpy as np
+from scipy.sparse import issparse
 
 from qif_micro.qif.datatypes.typing import Slice 
 from qif_micro.qif.datatypes._internal import _is_dist_valid, _ProbabDistError
@@ -19,7 +20,9 @@ class ProbabDist:
     is_slice: bool = False
 
     def __post_init__(self):
-        dist_check = _is_dist_valid(self.dist[np.newaxis, :], self.is_slice)
+        dist = self.dist[np.newaxis, :]
+        dist = dist.tocsr() if issparse(dist) else dist
+        dist_check = _is_dist_valid(dist, self.is_slice)
 
         if dist_check is _ProbabDistError.NEGATIVE_VALUES:
             raise ValueError("Negative entries!")
