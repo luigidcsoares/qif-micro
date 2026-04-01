@@ -195,6 +195,21 @@ def build(
     # ========================================================================
     # We first get the record-level channel for each attr, taking into account
     # the attributes that must be preserved (no mechanism applied)
+    
+    n_input_records = (
+        input_domain
+        .select(pl.col(record_col).max() + 1)
+        .collect(engine="streaming")
+        .item()
+    )
+
+    n_output_records = (
+        output_domain
+        .select(pl.col(record_col).max() + 1)
+        .collect(engine="streaming")
+        .item()
+    )
+
     preserve_attrs = attrs - set(transform_attrs)
     def _build_for(attr) -> Channel:
         # Min and max record length comes from the input domain
@@ -219,7 +234,7 @@ def build(
         if param.default is param.empty:
             attr_domain = (
                 input_domain
-                .select(pl.col(attr))
+                .select(attr)
                 .explode(attr)
                 .unique()
                 .collect(engine="streaming")
@@ -232,7 +247,7 @@ def build(
         if param.default is param.empty:
             attr_domain = (
                 output_domain
-                .select(pl.col(attr))
+                .select(attr)
                 .explode(attr)
                 .unique()
                 .collect(engine="streaming")
@@ -243,12 +258,12 @@ def build(
 
         ch, row_labels, col_labels = m(return_labels=True)
 
-        n_rows = len(row_labels)
-        map_row_labels = {"row_label": row_labels, "row": range(n_rows)}
+        n_rows_m = len(row_labels)
+        map_row_labels = {"row_label": row_labels, "row": range(n_rows_m)}
         map_row_labels = pl.LazyFrame(map_row_labels)
 
-        n_cols = len(col_labels)
-        map_col_labels = {"col_label": col_labels, "col": range(n_cols)}
+        n_cols_m = len(col_labels)
+        map_col_labels = {"col_label": col_labels, "col": range(n_cols_m)}
         map_col_labels = pl.LazyFrame(map_col_labels)
          
         ch_dist = coo_array(ch.dist)
@@ -303,11 +318,10 @@ def build(
         
         data = ch_metadata["p"].to_numpy()
         rows = ch_metadata[record_col].to_numpy()
-        cols = ch_metadata[f"{record_col}_right"].to_numpy()
+        cols = ch_metadata[record_col + "_right"].to_numpy()
 
-        shape = (n_input, n_output)
+        shape = (n_input_records, n_output_records)
         ch_dist = coo_array((data, (rows, cols)), shape=shape)
-        
         return ch_dist.tocsr()
 
     # Then we combine each individual channel, element-wise:
