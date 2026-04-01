@@ -29,6 +29,16 @@ def linkage_risk(adv_model: BaselineModel) -> np.floating:
         All other models produced with :mod:`qif_micro.model`, which assumes
         an adversary who observed the result of post-processing a dataset.
     
+    Returns
+    -------
+    np.floating
+        Probability of successful record inference by the adversary (0 to 1).
+    
+    Pre-conditions
+    --------------
+    - The ``adv_model`` must be a valid result from a model builder function.
+    - For Model type: baseline and strategy must have the same partition structure.
+    
     Examples
     --------
     >>> import polars as pl

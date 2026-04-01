@@ -100,6 +100,15 @@ def build(
         - Map from owners to row indices;
         - Map from hint labels to indices.
 
+    Pre-conditions
+    --------------
+    - Each dataset must be in "wide" format: each row is one entry of a record,
+      each column is a record attribute.
+    - Must have a column identifying record owners (default: ``"owner_id"``).
+    - Must have a column identifying entries within records (default: ``"entry_id"``).
+    - If multiple datasets: they must contain the same set of owners.
+    - The ``hint`` column(s) must exist and be populated.
+
     Examples
     --------
     >>> import polars as pl

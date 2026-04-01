@@ -72,9 +72,24 @@ def build(
 
     Returns
     -------
-    Model
-        A tuple (baseline_joint, adv_st) representing the baseline joint
-        and adversary strategy.
+    tuple[Joint, Strategy]
+        A pair (baseline_joint, adv_st) representing:
+        - baseline_joint: the baseline joint distribution
+        - adv_st: the adversary's strategy (posterior)
+
+    Pre-conditions
+    --------------
+    - ``records`` must be in "wide" format: each row is an entry of a record,
+      columns are record attributes.
+    - ``records`` must have ``record_col`` and ``entry_col`` columns identifying
+      records and entries (defaults: "record_id", "entry_id").
+    - ``baseline_dataset`` and ``sanitised_dataset`` must have ``owner_col``
+      and ``entry_col`` columns (defaults: "owner_id", "entry_id").
+    - ``pi`` prior size must equal the number of records in the record domain.
+    - All ``hint`` columns must exist in records and datasets.
+    - The mechanism must be compatible with the records and datasets.
+    - Baseline and sanitised datasets must produce compatible records with the
+      record domain under the given mechanism.
 
     Examples
     --------
@@ -138,9 +153,9 @@ def build(
     correctly, but the noise makes them guess incorrectly for ``q = 1``:
     
     >>> adv_st.dist.toarray()
-    array([[1., 0., 0., 0., 0., 0.],
-           [0., 0., 0., 1., 0., 0.],
-           [0., 0., 0., 0., 0., 1.]])
+    array([[1. , 0. , 0. , 0. , 0. , 0. ],
+           [0. , 0. , 0. , 1. , 0. , 0. ],
+           [0. , 0. , 0. , 0. , 0.5, 0.5]])
 
     The domain of records can also be a DataFrame, in which case each row
     represents an entry and must have ``record_id`` and ``entry_id`` columns:
@@ -166,9 +181,9 @@ def build(
            [0.  , 0.  , 0.25]])
 
     >>> adv_st.dist.toarray()
-    array([[1., 0., 0., 0., 0., 0.],
-           [0., 0., 0., 1., 0., 0.],
-           [0., 0., 0., 0., 0., 1.]])
+    array([[1. , 0. , 0. , 0. , 0. , 0. ],
+           [0. , 0. , 0. , 1. , 0. , 0. ],
+           [0. , 0. , 0. , 0. , 0.5, 0.5]])
     """
     # ========================================================================
     # Pre-conditions
@@ -237,7 +252,9 @@ def build(
         .join(records, on="record", how="left")
     )
 
-    hyper_mechanism = qif.hyper(pi, mechanism)[1].dist.tocoo()
+    # Compute the posteriors and transpose, since the result is a channel
+    # with outputs as the rows and we need them as columns.
+    hyper_mechanism = qif.hyper(pi, mechanism)[1].dist.T.tocoo()
     data, rows, cols = hyper_mechanism.data, *hyper_mechanism.coords
     hyper_mechanism_df = pl.LazyFrame({"row": rows, "col": cols, "p": data})
 

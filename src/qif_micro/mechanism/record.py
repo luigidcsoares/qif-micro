@@ -73,7 +73,19 @@ def build(
         corresponds to the i-th record in the input domain; similarly,
         the i-th column correspond to the i-th record in the output
         domain.
-    
+
+    Pre-conditions
+    --------------
+    - ``input_domain`` must have ``record_col`` and ``entry_col`` columns
+      (defaults: "record_id", "entry_id") identifying records and entries.
+    - ``input_domain`` must contain at least one record.
+    - If ``output_domain`` is provided, it must have the same structure as
+      ``input_domain`` and contain at least one record.
+    - All ``mechanisms`` keys must correspond to columns in the input domain
+      (excluding ID columns).
+    - Input and output domains must have compatible attributes (same set
+      of attributes except possibly different mechanisms applied).
+
     Examples
     --------
     >>> from functools import partial

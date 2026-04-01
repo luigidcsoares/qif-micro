@@ -72,6 +72,15 @@ def build(
     owner_col : str, optional (default: ``"owner_id"``)
         Column name for the owner identifier.
 
+    entry_col : str, optional (default: ``"entry_id"``)
+        Column name for the entry identifier (for longitudinal records).
+
+    return_owners : bool, optional (default: ``False``)
+        If true, the result includes a map from owners to row indices.
+
+    return_labels : bool, optional (default: ``False``)
+        If true, the result includes maps for counts and sums to column indices.
+
     Returns
     -------
     Joint
@@ -79,7 +88,17 @@ def build(
 
     Strategy
         The adversary's strategies for each valid output (given the baseline).
-    
+
+    Pre-conditions
+    --------------
+    - Each dataset must be in "wide" format: each row is one entry of a record,
+      each column is a record attribute.
+    - Must have a column identifying record owners (default: ``"owner_id"``).
+    - Must have a column identifying entries within records (default: ``"entry_id"``).
+    - All datasets must contain the same set of owners.
+    - The ``agg_col`` must be an integer-typed column.
+    - If ``group_by_col`` is specified, all datasets must have this column.
+
     Examples
     -------
     >>> import polars as pl
