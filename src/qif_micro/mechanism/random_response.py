@@ -31,7 +31,7 @@ def build(
            [0.125, 0.5  , 0.125, 0.125, 0.125],
            [0.125, 0.125, 0.5  , 0.125, 0.125]])
 
-    And we can get the labels for each row and column:
+    We can get the labels for each row and column:
 
     >>> row_labels, col_labels = mechanism.random_response(
     ...     1/2,
@@ -45,6 +45,13 @@ def build(
 
     >>> col_labels
     array(['a', 'b', 'd', 'c', 'e'], dtype='<U1')
+
+    And we can construct a slice of the mechanism:
+    
+    >>> mechanism.random_response(1/2, [0, 1, 2], [0, 2], domain_size=3).dist
+    array([[0.5 , 0.25],
+           [0.25, 0.5 ],
+           [0.25, 0.25]])
     """
     # ========================================================================
     # Pre-conditions
@@ -83,14 +90,18 @@ def build(
     # We reorder to keep shared values at the front:
     input_domain = np.hstack([shared, diff_inp])
     output_domain = np.hstack([shared, diff_out])
+
+    n_shared = shared.shape[0]
+    n_outliers = diff_out.shape[0]
+    assert (n_shared + n_outliers) == n_cols
     
     # We first construct the slice of the channel without outliers:
     p_replace = (1 - p) / (domain_size - 1)
-    dist_matching = np.full((n_rows, n_rows), p_replace)
+    dist_matching = np.full((n_rows, n_shared), p_replace)
     np.fill_diagonal(dist_matching, p)
 
     # Then we construct a second partition for outliers
-    dist_outliers = np.full((n_rows, diff_out.shape[0]), p_replace)
+    dist_outliers = np.full((n_rows, n_outliers), p_replace)
     
     ch = Channel(np.hstack([dist_matching, dist_outliers]), is_slice)
     return (ch, input_domain, output_domain) if return_labels else ch
