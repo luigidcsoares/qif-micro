@@ -174,6 +174,10 @@ def hyper(joint: Joint) -> tuple[ProbabDist, Channel]:
 
     # If joint is sparse, the result will be in coo repr, so we convert to csr
     def _mk_post(s_joint, s_outer):
+        # If the joint is a slice, the outer will have zeros, which will trigger
+        # a division by zero. So we replace zeros with a flag 1, which shouldnt
+        # change the final result (as the cells will be 0 / 1):
+        s_outer[s_outer == 0] = 1
         post_slice = (s_joint / s_outer).T
         return post_slice.tocsr() if issparse(s_joint) else post_slice
 
