@@ -198,7 +198,7 @@ def build(
     # Check the required attributes for the domain of records
     required = [record_col, entry_col, *hint]
     ok, missing = _valid_columns(records, required)
-    if not ok: raise ValueError(f"Baseline missing attributes: {missing}")
+    if not ok: raise ValueError(f"Records missing attributes: {missing}")
 
     # We assume that each index i in the prior ``pi`` corresponds to the i-th
     # record in the domain of records. So, their length must be the same.
@@ -280,7 +280,6 @@ def build(
         raise ValueError("Incompatible baseline and sanitised datasets!")
 
     # ========================================================================
-    
     # The adversary's intermediate knowledge on a particular record is given
     # by the sum of the posterior probability of that record, given
     # the observed sanitised records, weighted by the dataset length.
