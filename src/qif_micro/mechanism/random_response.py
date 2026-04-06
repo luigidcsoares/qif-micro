@@ -57,8 +57,6 @@ def build(
     # Pre-conditions
     # ========================================================================
 
-    # The output domain must be a superset of the the input,
-    # unless the user is not constructing the entire channel:
     input_domain = np.unique(input_domain)
 
     if output_domain is None: output_domain = input_domain
