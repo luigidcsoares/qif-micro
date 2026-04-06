@@ -75,13 +75,9 @@ def build(
     if not (0 < alpha <= 1):
         raise ValueError("Alpha must satisfy 0 < ``alpha`` <= 1")
 
-    # The output domain must be a superset of the the input:
     input_domain = set(input_domain)
     if output_domain is None: output_domain = input_domain
     else: output_domain = set(output_domain)
-
-    if len(input_domain - output_domain) > 0:
-        raise ValueError("Output must be a superset of input!")
 
     # Convert to numpy arrays early for type validation and sorting
     input_domain = np.sort(list(input_domain))
@@ -101,6 +97,11 @@ def build(
         (domain_min < output_domain[0]) or
         (domain_max > output_domain[-1])
     )
+
+    diff_inp = np.setdiff1d(input_domain, output_domain, assume_unique=True)
+
+    if (not is_slice) and (diff_inp.shape[0] > 0):
+        raise ValueError("Full channel: output must be a superset of input!")
 
     # ========================================================================
 
