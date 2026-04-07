@@ -290,17 +290,16 @@ def build(
         .item()
     )
 
-    p_expr = pl.col("p").sum() / n_records
+    p_expr = pl.col("p").mul("len").sum() / n_records
     delta_metadata = (
-        sanitised_records
-        .drop(owner_col, "record")
+        sanitised_records.group_by(record_col).agg(pl.len())
         .join(hyper_mechanism_df, left_on=record_col, right_on="col")
         .group_by("row").agg(p_expr)
         .join(records, left_on="row", right_on=record_col)
         .sort("row")
         .collect(engine="streaming")
     )
-    
+
     # To construct the hint channel, we follow the same approach implemented
     # in the baseline model, but we re-implement it here so that we can
     # restrict it to the hints that are possible in practice, but still
