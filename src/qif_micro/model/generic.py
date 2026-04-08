@@ -204,7 +204,7 @@ def build(
     # record in the domain of records. So, their length must be the same.
     n_records = (
         records
-        .select(pl.col(record_col).len())
+        .select(pl.col(record_col).n_unique())
         .collect(engine="streaming")
         .item()
     )
@@ -284,7 +284,7 @@ def build(
     # by the sum of the posterior probability of that record, given
     # the observed sanitised records, weighted by the dataset length.
     n_records = (
-        sanitised_dataset
+        sanitised_records
         .select(pl.len())
         .collect(engine="streaming")
         .item()
@@ -338,8 +338,8 @@ def build(
     # so it is not really a valid channel. But, we can construct from
     # it the baseline joint (which will be a valid joint):
     p_expr = (pl.col("p") / n_records).alias("p")
-
     baseline_records = baseline_records.lazy().rename({record_col: "row"})
+    
     baseline_joint_metadata = (
         ch_metadata.lazy()
         .join(baseline_records, on="row")
