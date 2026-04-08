@@ -3,6 +3,7 @@ from functools import partial
 from inspect import signature
 from typing import Any
 
+import numpy as np
 import polars as pl
 
 from multimethod import multimethod
@@ -16,6 +17,7 @@ from qif_micro.typing import AttrMechanism, DataFrame, Record
 def build(
     input_domain: DataFrame,
     output_domain: DataFrame | None = None,
+    output_size: int | None = None,
     record_col: str = "record_id",
     entry_col: str = "entry_id",
     **mechanisms: AttrMechanism,
@@ -29,10 +31,6 @@ def build(
     - ``build(mechanisms, input_domain, ...)``: accepts a :class:`DataFrame`
     - ``build(mechanisms, input_domain, ...)``: accepts an iterable of records
 
-    TODOS
-    -----
-    Add support to mechanisms with different output domain.
-    
     Parameters
     ----------
     mechanisms : dict[str, AttrMechanism]
@@ -137,7 +135,6 @@ def build(
     # ========================================================================
     # Pre-conditions
     # ========================================================================
-
     if output_domain is None: output_domain = input_domain
         
     # Group the DataFrame by record and entry
@@ -195,7 +192,6 @@ def build(
     # ========================================================================
     # We first get the record-level channel for each attr, taking into account
     # the attributes that must be preserved (no mechanism applied)
-    
     n_input_records = (
         input_domain
         .select(pl.col(record_col).max() + 1)
@@ -209,6 +205,8 @@ def build(
         .collect(engine="streaming")
         .item()
     )
+
+    if output_size is None: output_size = n_output_records
 
     preserve_attrs = attrs - set(transform_attrs)
     def _build_for(attr) -> Channel:
@@ -256,6 +254,7 @@ def build(
             )
             m = partial(m, output_domain=attr_domain)
 
+
         ch, row_labels, col_labels = m(return_labels=True)
 
         n_rows_m = len(row_labels)
@@ -281,7 +280,8 @@ def build(
         
         input_entries = (
             input_domain
-            .with_columns(len_expr, pl.col(attr).alias("row_label"))
+            .with_columns(len_expr)
+            .rename({attr: "row_label"})
             .explode("row_label")
             .with_columns(entry_expr)
             .collect(engine="streaming")
@@ -290,7 +290,8 @@ def build(
 
         output_entries = (
             output_domain
-            .with_columns(len_expr, pl.col(attr).alias("col_label"))
+            .with_columns(len_expr)
+            .rename({attr: "col_label"})
             .explode("col_label")
             .with_columns(entry_expr)
             .collect(engine="streaming")
@@ -301,15 +302,26 @@ def build(
         ch_metadata = []
         
         for l in input_entries.keys():
-            input_part = input_entries[l].lazy()
-            output_part = output_entries[l].lazy()
+            input_part = input_entries[l].drop("len").lazy()
+            output_part = output_entries[l].drop("len").lazy()
 
             metadata_l = (
+                # We first join with the mechanism to get the possible
+                # sanitised values, and join with the output_part to
+                # get records that are candidate to be compatible.
                 input_part
-                .join(mechanism_df, on="row_label")
+                .join(mechanism_df, on="row_label").drop("row_label")
                 .join(output_part, on=join_cols)
-                .group_by(record_col, f"{record_col}_right")
-                .agg(pl.col("p").product())
+
+                # For records with length > 1, it may be that we get
+                # a few entries compatible, but not all of them.
+                # In this case we must discard such records.
+                .group_by(record_col, f"{record_col}_right").agg("p")
+                .filter(pl.col("p").list.len() == l[0])
+
+                # Once we have only the compatible records, we can
+                # compute the probability as a product for each entry.
+                .with_columns(pl.col("p").list.agg(pl.element().product()))
             )
 
             ch_metadata.append(metadata_l)
@@ -328,13 +340,17 @@ def build(
     ch_dist = _build_for(transform_attrs[0])
     for attr in transform_attrs[1:]: ch_dist *= _build_for(attr)
 
-    return Channel(ch_dist, is_slice=True)
+    nz_per_col = ch_dist.count_nonzero(axis=0)
+    nz_cols = np.nonzero(nz_per_col > 1)[0]
+
+    return Channel(ch_dist, is_slice=nz_cols.shape[0] < output_size)
 
 
 @multimethod
 def build(
     input_domain: Iterable[Record],
     output_domain: Iterable[Record] | None = None,
+    output_size: int | None = None,
     record_col: str = "record_id",
     entry_col: str = "entry_id",
     **mechanisms: AttrMechanism,
@@ -354,6 +370,7 @@ def build(
     return build(
         input_domain,
         output_domain,
+        output_size=output_size,
         record_col=record_col,
         entry_col=entry_col,
         **mechanisms
