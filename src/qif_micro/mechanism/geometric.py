@@ -20,7 +20,7 @@ def build(
     Parameters
     ----------
     alpha : np.floating
-        The privacy parameter. Must satisfy 0 < alpha <= 1.
+        The privacy parameter. Must satisfy 0 <= alpha < 1.
 
     input_domain : Iterable[Any]
         The domain of possible input values. Must contain integers.
@@ -72,8 +72,8 @@ def build(
     # Pre-conditions
     # ========================================================================
 
-    if not (0 < alpha <= 1):
-        raise ValueError("Alpha must satisfy 0 < ``alpha`` <= 1")
+    if not (0 <= alpha < 1):
+        raise ValueError("Alpha must satisfy 0 <= ``alpha`` < 1")
 
     input_domain = set(input_domain)
     if output_domain is None: output_domain = input_domain
