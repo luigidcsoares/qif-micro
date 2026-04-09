@@ -57,19 +57,14 @@ def geometric(
 
     - The values in ``input_domain`` and ``output_domain`` must be integers
     
-    - The resulting mechanism is assumed to be complete in the following cases:
-
-      a. Either the optional parameter ``domain_min`` or ``domain_max`` is specified,
-         and its value is outside ``output_domain``
-
-      b. Neither ``domain_min`` nor ``domain_max`` are specified, and ``output_domain``
-         is not contiguous
-
-      In such cases ``output_domain`` must be a superset of ``input_domain``
-
     - ``domain_min`` must be <= than the smallest value in ``output_domain``
     - ``domain_max`` must be >= than the largest value in ``output_domain``
     - ``domain_min`` must be strictly smaller than ``domain_max``
+
+    - If ``domain_min`` or ``domain_max`` are not informed, it is assumed that
+      the resulting mechanism will be complete, in which case ``output_domain``
+      must be a superset of ``input_domain``. The resulting mechanism may still
+      be a slice, if ``output_domain`` is a superset, but is not contiguous.
 
     Post-conditions
     ---------------
@@ -133,6 +128,8 @@ def geometric(
     if not np.issubdtype(output_domain.dtype, np.integer):
         raise ValueError("``output_domain`` must contain only integers!")
 
+    is_complete = (domain_min is None) and (domain_max is None)
+
     # Set domain boundaries, in case of slice:
     if domain_min is None: domain_min = output_domain[0]
     if domain_max is None: domain_max = output_domain[-1]
@@ -151,10 +148,6 @@ def geometric(
         domain_max_msg = f"``domain_max`` ({domain_max})"
         output_max_msg = f"max ``output_domain`` ({output_domain[-1]})"
         raise ValueError(f"{domain_max_msg} must be >= {output_max_msg}")
-
-    is_min_eq = domain_min == output_domain[0]
-    is_max_eq = domain_max == output_domain[-1]
-    is_complete = is_min_eq and is_max_eq
 
     diff_inp = np.setdiff1d(input_domain, output_domain, assume_unique=True)
     if is_complete and (diff_inp.shape[0] > 0):
