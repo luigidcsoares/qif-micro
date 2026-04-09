@@ -1,44 +1,40 @@
-import enum
-
 from collections.abc import Sequence
+from dataclasses import dataclass
+from enum import Enum
 from functools import reduce
 
-import numpy as np
-
 from multimethod import multimethod
-from scipy.sparse import issparse, csr_array
+import numpy as np
+import scipy.sparse as sp
 
 from qif_micro.qif.datatypes.typing import Slice
 
-class _ProbabDistError(enum.Enum):
-    OK = 0
+class _Error(Enum):
     NEGATIVE_VALUES = 1
     ROW_SUM_MISMATCH = 2
 
+
+@dataclass(frozen=True)
+class _Check:
+    error: _Error | None = None
+    row_sum: np.ndarray | None = None
+
     
 @multimethod
-def _is_dist_valid(
-    dist: Sequence[Slice],
-    is_slice: bool | np.bool = False
-) -> _ProbabDistError:
-    inner_data = [s.data if issparse(s) else s for s in dist]
+def _is_dist_valid(dist: Sequence[Slice]) -> _Check:
+    inner_data = [s.data if sp.issparse(s) else s for s in dist]
     
     has_negative = np.any([np.any(s < 0) for s in inner_data])
-    if has_negative: return _ProbabDistError.NEGATIVE_VALUES
+    if has_negative: return _Check(error=_Error.NEGATIVE_VALUES)
 
-    if is_slice: return _ProbabDistError.OK
-    
     reduce_fn = lambda acc, s: acc + s.sum(axis=1)
     row_sum = reduce(reduce_fn, dist[1:], dist[0].sum(axis=1))
-    sum_to_one = np.isclose(row_sum, 1).all()
-    if not sum_to_one: return _ProbabDistError.ROW_SUM_MISMATCH
+    sum_is_one = np.isclose(row_sum, 1)
+    sum_exceeds_one = ((row_sum > 1) & ~sum_is_one).any()
+    if sum_exceeds_one: return _Check(error=_Error.ROW_SUM_MISMATCH)
 
-    return _ProbabDistError.OK
+    return _Check(row_sum=row_sum)
     
 
 @multimethod
-def _is_dist_valid(
-    dist: Slice,
-    is_slice: bool | np.bool = False
-) -> _ProbabDistError:
-    return _is_dist_valid([dist], is_slice)
+def _is_dist_valid(dist: Slice) -> _Error: return _is_dist_valid([dist])

@@ -1,8 +1,7 @@
 from collections.abc import Sequence
 
-import numpy as np
-
 from multimethod import multimethod
+import numpy as np
 
 from qif_micro import qif
 from qif_micro.qif.datatypes import Joint

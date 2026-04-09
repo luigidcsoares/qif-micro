@@ -1,7 +1,7 @@
 from collections.abc import Sequence
 
 import numpy as np
-from scipy.sparse import coo_array, csr_array, hstack, issparse
+import scipy.sparse as sp
 
 from qif_micro.qif.datatypes import Channel
 
@@ -28,7 +28,7 @@ def identity(n: np.uint64) -> Channel:
     data = np.repeat(1.0, n)    
     indices = np.arange(n)
     indptr = np.arange(n + 1)
-    ch_dist = csr_array((data, indices, indptr), shape=(n, n))
+    ch_dist = sp.csr_array((data, indices, indptr), shape=(n, n))
     return Channel(ch_dist)
 
 
@@ -55,11 +55,11 @@ def reduced(ch: Channel) -> Channel:
 
     Examples
     --------
-    >>> from scipy.sparse import csr_array
+    >>> import scipy.sparse as sp
     >>> from qif_micro import qif
     >>> from qif_micro.qif.datatypes import Channel
 
-    >>> ch = Channel(csr_array([[1/2, 1/4, 1/8, 1/8], [2/3, 1/6, 1/6, 0]]))
+    >>> ch = Channel(sp.csr_array([[1/2, 1/4, 1/8, 1/8], [2/3, 1/6, 1/6, 0]]))
     >>> qif.channel.reduced(ch).dist.toarray()
     array([[0.625     , 0.25      , 0.125     ],
            [0.83333333, 0.16666667, 0.        ]])
@@ -75,8 +75,8 @@ def reduced(ch: Channel) -> Channel:
     is_partitioned = isinstance(ch.dist, Sequence)
     ch_dist = ch.dist if is_partitioned else [ch.dist]
 
-    keep_sparse = np.any([issparse(s) for s in ch_dist])
-    ch_dist = hstack([csr_array(s) for s in ch_dist])
+    keep_sparse = np.any([sp.issparse(s) for s in ch_dist])
+    ch_dist = sp.hstack([sp.csr_array(s) for s in ch_dist])
     
     # We start by dividing each col by the first non-zero entry.
     # This guarantees that, if col_i = k * col_j, we get rid of k,
@@ -110,8 +110,11 @@ def reduced(ch: Channel) -> Channel:
     rows = np.arange(n_cols, dtype=np.uint64)
     cols = indices
     data = np.ones(n_cols, dtype=ch_cols.dtype)
-    agg = coo_array((data, (rows, cols)), shape=(n_cols, n_unique_cols)).tocsc()
+
+    coo_repr = (data, (rows, cols))
+    shape = (n_cols, n_unique_cols)
+    agg = sp.coo_array(coo_repr, shape=shape).tocsc()
 
     reduced_dist = ch_dist @ agg
     reduced_dist = reduced_dist if keep_sparse else reduced_dist.toarray()
-    return Channel(reduced_dist, ch.is_slice)
+    return Channel(reduced_dist)

@@ -1,12 +1,11 @@
 from collections.abc import Iterable
 from functools import reduce
 
+from multimethod import multimethod
+from scipy.special import gammaln
 import numpy as np
 import polars as pl
-
-from multimethod import multimethod
-from scipy.sparse import coo_array
-from scipy.special import gammaln
+import scipy.sparse as sp
 
 from qif_micro import qif
 from qif_micro.qif.datatypes import Channel, Joint, ProbabDist, Strategy
@@ -289,7 +288,9 @@ def build(
     rows = joint_agg_metadata["agg_record"].to_numpy()
     cols = joint_agg_metadata["hint"].to_numpy()
 
-    joint_agg_dist = coo_array((data, (rows, cols)), shape=(n_rows, n_cols))
+    shape = (n_rows, n_cols)
+    coo_repr = (data, (rows, cols))
+    joint_agg_dist = sp.coo_array(coo_repr, shape=shape)
     baseline_joint = Joint(joint_agg_dist.tocsr())
 
     # Now that we have the baseline joint, we can construct
@@ -410,8 +411,8 @@ def build(
     cols = ch_metadata["hint"].to_numpy()
 
     coo_repr = (data, (rows, cols))
-    hint_ch_dist = coo_array(coo_repr, shape=(n_rows, n_cols))
-    hint_ch = Channel(hint_ch_dist.tocsr(), is_slice=True)
+    hint_ch_dist = sp.coo_array(coo_repr, shape=(n_rows, n_cols))
+    hint_ch = Channel(hint_ch_dist.tocsr())
 
     adv_joint = qif.joint(pi_agg, hint_ch)
     adv_st = qif.strategy(adv_joint)

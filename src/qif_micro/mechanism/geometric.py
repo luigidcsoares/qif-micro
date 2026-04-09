@@ -89,7 +89,7 @@ def build(
     if not np.issubdtype(output_domain.dtype, np.integer):
         raise ValueError("Output domain must contain only integers.")
 
-    is_full = (domain_min is None) and (domain_max is None)
+    is_complete = (domain_min is None) and (domain_max is None)
 
     # Set domain boundaries, in case of slice:
     if domain_min is None: domain_min = output_domain[0]
@@ -97,7 +97,7 @@ def build(
 
     diff_inp = np.setdiff1d(input_domain, output_domain, assume_unique=True)
     
-    if is_full and (diff_inp.shape[0] > 0):
+    if is_complete and (diff_inp.shape[0] > 0):
         raise ValueError("Full channel: output must be a superset of input!")
 
     # ========================================================================
@@ -116,5 +116,5 @@ def build(
     is_interior = (output_domain > domain_min) & (output_domain < domain_max)
     boundary_factor = np.where(is_interior, (1 - alpha), 1.0)
 
-    ch = Channel(base_weights * boundary_factor, is_slice=not is_full)
+    ch = Channel(base_weights * boundary_factor)
     return (ch, input_domain, output_domain) if return_labels else ch

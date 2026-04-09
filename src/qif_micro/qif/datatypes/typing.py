@@ -1,4 +1,4 @@
-from numpy import ndarray
-from scipy.sparse import csc_array, csr_array
+import numpy as np
+import scipy.sparse as sp
 
-type Slice = ndarray | csc_array | csr_array
+type Slice = np.ndarray | sp.csc_array | sp.csr_array

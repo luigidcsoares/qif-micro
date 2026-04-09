@@ -1,10 +1,9 @@
 from collections.abc import Iterable, Sequence
 
+from multimethod import multimethod
 import numpy as np
 import polars as pl
-
-from multimethod import multimethod
-from scipy.sparse import coo_array, csr_array, hstack
+import scipy.sparse as sp
 
 from qif_micro import qif
 from qif_micro.qif.datatypes import Channel, Joint, ProbabDist, Strategy
@@ -357,7 +356,7 @@ def build(
     rows = baseline_joint_metadata["dense_row"].to_numpy()
 
     coo_repr = (data, (rows, cols))
-    baseline_joint_dist = coo_array(coo_repr, shape=(n_rows, n_cols))
+    baseline_joint_dist = sp.coo_array(coo_repr, shape=(n_rows, n_cols))
     baseline_joint = Joint(baseline_joint_dist.tocsr())
 
     data = ch_metadata["p"].to_numpy()
@@ -366,9 +365,9 @@ def build(
 
     shape = (n_rows, n_cols)
     coo_repr = (data, (rows, cols))
-    dist = coo_array(coo_repr, shape=shape).tocsr()
+    dist = sp.coo_array(coo_repr, shape=shape).tocsr()
 
-    hint_ch = Channel(dist, is_slice=True)
+    hint_ch = Channel(dist)
 
     delta = ProbabDist(delta_metadata["p"].to_numpy().ravel())
     adv_joint = qif.joint(delta, hint_ch)

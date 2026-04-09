@@ -2,24 +2,17 @@ from collections.abc import Sequence
 from itertools import chain
 
 import numpy as np
-import polars as pl
-
-from numpy.typing import NDArray
-from scipy.sparse import csr_array, hstack, issparse
+import scipy.sparse as sp
 
 from qif_micro.qif.datatypes import Channel
 
-def _dense_parallel(lhs: NDArray[np.floating], rhs: NDArray[np.floating]):
+def _dense_parallel(lhs: np.ndarray, rhs: np.ndarray):
     n_rows = lhs.shape[0]
     assert n_rows == rhs.shape[0]
     return np.einsum("xy,xz->xyz", lhs, rhs).reshape(n_rows, -1)
 
     
-def _sparse_parallel(
-    lhs: NDArray[np.floating],
-    rhs: NDArray[np.floating],
-    return_cols: bool
-):
+def _sparse_parallel(lhs: np.ndarray, rhs: np.ndarray, return_cols: bool):
     n_rows = lhs.shape[0]
     assert n_rows == rhs.shape[0]
     
@@ -58,7 +51,7 @@ def _sparse_parallel(
     if not return_cols:
         _, indices = np.unique(flat_indices, return_inverse=True)
         n_cols = indices.max() + 1
-        ch_dist = csr_array((data, indices, indptr), shape=(n_rows, n_cols))
+        ch_dist = sp.csr_array((data, indices, indptr), shape=(n_rows, n_cols))
         return ch_dist, np.empty(shape=(0, 2), dtype=np.uint64)
         
     _, first_pos, indices = np.unique(
@@ -68,17 +61,16 @@ def _sparse_parallel(
     )
 
     n_cols = indices.max() + 1
-    ch_dist = csr_array((data, indices, indptr), shape=(n_rows, n_cols))
+    ch_dist = sp.csr_array((data, indices, indptr), shape=(n_rows, n_cols))
 
     # Also return the column pairs that correspond to each new column
     return ch_dist, sparse_indices[first_pos]
 
 
-type Columns = NDArray[int]
 type ReturnParallel = (
     Channel
-    | [Channel, Columns | int]
-    | [Channel, Columns, int]
+    | [Channel, np.ndarray | int]
+    | [Channel, np.ndarray, int]
 )
     
 def parallel(
@@ -114,11 +106,11 @@ def parallel(
     Channel
         The result of the parallel composition of ``lhs`` and ``rhs``.
 
-    tuple (Channel, Columns | int)
+    tuple (Channel, np.ndarray | int)
         - The result of the parallel composition;
         - If ``return_columns`` enabled: The columns labels (pairs) OR
 
-    tuple (Channel, Columns, int)
+    tuple (Channel, np.ndarray, int)
         - The result of the parallel composition;
         - The column labels (pairs);
         - The number of columns reduced.
@@ -126,7 +118,7 @@ def parallel(
     Examples
     --------
     >>> import numpy as np
-    >>> from scipy.sparse import csr_array, hstack
+    >>> import scipy.sparse as sp
     >>> from qif_micro.qif.compose import parallel
     >>> from qif_micro.qif.datatypes import Channel
 
@@ -144,9 +136,9 @@ def parallel(
 
     Now notice how columns are reduced with a sparse repr:
     
-    >>> lhs = Channel(csr_array(lhs.dist))
-    >>> rhs = Channel(csr_array(rhs.dist))
-    >>> hstack(parallel(lhs, rhs).dist).toarray()
+    >>> lhs = Channel(sp.csr_array(lhs.dist))
+    >>> rhs = Channel(sp.csr_array(rhs.dist))
+    >>> sp.hstack(parallel(lhs, rhs).dist).toarray()
     array([[0.5       , 0.        , 0.16666667, 0.04166667, 0.04166667,
                 0.16666667, 0.04166667, 0.04166667],
                [0.        , 0.66666667, 0.11111111, 0.05555556, 0.        ,
@@ -165,14 +157,12 @@ def parallel(
            [ 3,  1],
            [ 3,  2]])
     """
-    is_slice = lhs.is_slice or rhs.is_slice
-
     # If any of the partitions is sparse, treat all of them as sparse.
     lhs = lhs.dist if isinstance(lhs.dist, Sequence) else [lhs.dist]
     rhs = rhs.dist if isinstance(rhs.dist, Sequence) else [rhs.dist]
 
-    is_lhs_sparse = np.any([issparse(s) for s in lhs])
-    is_rhs_sparse = np.any([issparse(s) for s in rhs])
+    is_lhs_sparse = np.any([sp.issparse(s) for s in lhs])
+    is_rhs_sparse = np.any([sp.issparse(s) for s in rhs])
 
     # Pre-condition: number of rows must match
     n_rows = lhs[0].shape[0]
@@ -185,7 +175,7 @@ def parallel(
         pairs = ((lhs_s, rhs_s) for lhs_s in lhs for rhs_s in rhs)
         par_dist = [_dense_parallel(*p) for p in pairs]
         par_dist = par_dist if len(par_dist) > 1 else par_dist[0]
-        return Channel(par_dist, is_slice)
+        return Channel(par_dist)
         
     # If memory is not a concern (even though channels are sparse),
     # just do the parallel composition without any optimisation.
@@ -195,8 +185,8 @@ def parallel(
         par_dist, cols = zip(*result_it)
         par_dist = par_dist if len(par_dist) > 1 else par_dist[0]
         cols = np.vstack(cols)
-        if return_cols: return Channel(par_dist, is_slice), cols
-        return Channel(par_dist, is_slice)
+        if return_cols: return Channel(par_dist), cols
+        return Channel(par_dist)
     
     # Otherwise, parallel optimisation is enabled.
     # 
@@ -211,7 +201,7 @@ def parallel(
     probab_nz_cols_lhs = [np.nonzero(s > 1)[0] for s in nz_per_col]
     
     reduced_lhs = [lhs[i][:, c] for i, c in enumerate(determ_nz_cols_lhs)]
-    reduced_lhs = hstack(reduced_lhs)
+    reduced_lhs = sp.hstack(reduced_lhs)
 
     unreduced_lhs = [
         lhs[i][:, s_cols] for i, s_cols in enumerate(probab_nz_cols_lhs)
@@ -243,7 +233,7 @@ def parallel(
     ]
 
     reduced_rhs = [rhs[i][:, c] for i, c in enumerate(determ_nz_cols_rhs)]
-    reduced_rhs = hstack(reduced_rhs)
+    reduced_rhs = sp.hstack(reduced_rhs)
 
     unreduced_rhs = [
         rhs[i][:, s_cols] for i, s_cols in enumerate(probab_nz_cols_rhs)
@@ -307,5 +297,5 @@ def parallel(
 
         
     cols = np.vstack([*cols_reduced_lhs, *cols_reduced_rhs, *cols])
-    if return_cols: return Channel(par_dist, is_slice), cols
-    return Channel(par_dist, is_slice)
+    if return_cols: return Channel(par_dist), cols
+    return Channel(par_dist)

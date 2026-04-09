@@ -74,10 +74,10 @@ def build(
     else:
         domain_size = n_cols
 
-    is_slice = n_cols < domain_size
+    is_complete= n_cols == domain_size
     diff_inp = np.setdiff1d(input_domain, output_domain, assume_unique=True)
 
-    if (not is_slice) and (diff_inp.shape[0] > 0):
+    if is_complete and (diff_inp.shape[0] > 0):
         raise ValueError("Full channel: output must be a superset of input!")
     
     # ========================================================================
@@ -101,5 +101,5 @@ def build(
     # Then we construct a second partition for outliers
     dist_outliers = np.full((n_rows, n_outliers), p_replace)
     
-    ch = Channel(np.hstack([dist_matching, dist_outliers]), is_slice)
+    ch = Channel(np.hstack([dist_matching, dist_outliers]))
     return (ch, input_domain, output_domain) if return_labels else ch

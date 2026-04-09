@@ -1,8 +1,7 @@
 from collections.abc import Sequence
 
-import numpy as np
-
 from multimethod import multimethod
+import numpy as np
 
 from qif_micro import qif
 from qif_micro.qif.datatypes import Channel, Joint, ProbabDist
@@ -65,13 +64,13 @@ def posterior(pi: ProbabDist, ch: Channel) -> np.floating:
     Examples
     --------
     >>> import numpy as np
-    >>> from scipy.sparse import csr_array
+    >>> import scipy.sparse as sp
     >>> from qif_micro.qif.datatypes import Channel
     >>> from qif_micro.qif.datatypes import ProbabDist
     >>> from qif_micro.qif.measure import bayes
 
     >>> pi = ProbabDist(np.array([1/4, 1/2, 1/4]))
-    >>> ch = Channel(csr_array([
+    >>> ch = Channel(sp.csr_array([
     ...     [1/4, 1/2, 1/4], # First row
     ...     [0,     1,   0], # Second row
     ...     [0,     0,   1]  # Third row

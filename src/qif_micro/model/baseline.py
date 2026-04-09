@@ -1,11 +1,10 @@
 from collections.abc import Iterable, Sequence
 from functools import reduce
 
+from multimethod import multimethod
 import numpy as np
 import polars as pl
-
-from multimethod import multimethod
-from scipy.sparse import coo_array
+import scipy.sparse as sp
 
 from qif_micro import qif
 from qif_micro.qif.datatypes import Channel, Joint, ProbabDist
@@ -112,7 +111,7 @@ def build(
     Examples
     --------
     >>> import polars as pl
-    >>> from scipy.sparse import hstack
+    >>> import scipy.sparse as sp
     >>> from qif_micro import model
 
     Consider the following dataset:
@@ -143,7 +142,7 @@ def build(
 
     >>> datasets = [dataset, dataset_rhs]
     >>> joint = model.baseline(datasets, "hint")
-    >>> hstack(joint.dist).toarray()
+    >>> sp.hstack(joint.dist).toarray()
     array([[0.   , 0.25 , 0.   ],
            [0.25 , 0.   , 0.   ],
            [0.   , 0.125, 0.125],
@@ -431,7 +430,7 @@ def build(
         rows = ch_dist_df["record"].to_numpy()
         cols = ch_dist_df["hint"].to_numpy()
 
-        ch_dist = coo_array((data, (rows, cols)), shape=(n_rows, n_cols))
+        ch_dist = sp.coo_array((data, (rows, cols)), shape=(n_rows, n_cols))
         return ch_dist.tocsr()
 
 

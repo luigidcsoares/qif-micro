@@ -3,11 +3,10 @@ from functools import partial
 from inspect import signature
 from typing import Any
 
+from multimethod import multimethod
 import numpy as np
 import polars as pl
-
-from multimethod import multimethod
-from scipy.sparse import coo_array, csr_array
+import scipy.sparse as sp
 
 from qif_micro import qif
 from qif_micro.qif.datatypes import Channel
@@ -265,7 +264,7 @@ def build(
         map_col_labels = {"col_label": col_labels, "col": range(n_cols_m)}
         map_col_labels = pl.LazyFrame(map_col_labels)
          
-        ch_dist = coo_array(ch.dist)
+        ch_dist = sp.coo_array(ch.dist)
         data = ch_dist.data
         rows, cols = ch_dist.coords
         
@@ -333,17 +332,14 @@ def build(
         cols = ch_metadata[record_col + "_right"].to_numpy()
 
         shape = (n_input_records, n_output_records)
-        ch_dist = coo_array((data, (rows, cols)), shape=shape)
+        ch_dist = sp.coo_array((data, (rows, cols)), shape=shape)
         return ch_dist.tocsr()
 
     # Then we combine each individual channel, element-wise:
     ch_dist = _build_for(transform_attrs[0])
     for attr in transform_attrs[1:]: ch_dist *= _build_for(attr)
 
-    nz_per_col = ch_dist.count_nonzero(axis=0)
-    nz_cols = np.nonzero(nz_per_col > 1)[0]
-
-    return Channel(ch_dist, is_slice=nz_cols.shape[0] < output_size)
+    return Channel(ch_dist)
 
 
 @multimethod
