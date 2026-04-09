@@ -19,6 +19,8 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
+    "catppuccin-jupyterlab>=0.2.4",
+    "jupyter>=1.1.1",
     "pytest>=8.4.1",
     "vulture>=2.16",
 ]

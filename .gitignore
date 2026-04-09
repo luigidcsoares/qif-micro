@@ -9,8 +9,26 @@
 !pyproject.toml
 !uv.lock
 
+# Examples
+!tutorial.ipynb
+
 # Library implementation
 !src/
 !src/qif_micro/
-!src/qif_micro/**/
-!src/qif_micro/**/*.py
+!src/qif_micro/*.py
+!src/qif_micro/mechanism/
+!src/qif_micro/mechanism/*.py
+!src/qif_micro/model/
+!src/qif_micro/model/*.py
+!src/qif_micro/qif/
+!src/qif_micro/qif/*.py
+!src/qif_micro/qif/datatypes/
+!src/qif_micro/qif/datatypes/*.py
+!src/qif_micro/qif/measure/
+!src/qif_micro/qif/measure/*.py
+
+# Unit and integration tests
+# !tests/
+# !tests/
+# !tests/**/
+# !tests/**/*.py
