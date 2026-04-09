@@ -16,7 +16,6 @@ from qif_micro.typing import AttrMechanism, DataFrame, Record
 def build(
     input_domain: DataFrame,
     output_domain: DataFrame | None = None,
-    output_size: int | None = None,
     record_col: str = "record_id",
     entry_col: str = "entry_id",
     **mechanisms: AttrMechanism,
@@ -205,8 +204,6 @@ def build(
         .item()
     )
 
-    if output_size is None: output_size = n_output_records
-
     preserve_attrs = attrs - set(transform_attrs)
     def _build_for(attr) -> Channel:
         # Min and max record length comes from the input domain
@@ -346,7 +343,6 @@ def build(
 def build(
     input_domain: Iterable[Record],
     output_domain: Iterable[Record] | None = None,
-    output_size: int | None = None,
     record_col: str = "record_id",
     entry_col: str = "entry_id",
     **mechanisms: AttrMechanism,
@@ -366,7 +362,6 @@ def build(
     return build(
         input_domain,
         output_domain,
-        output_size=output_size,
         record_col=record_col,
         entry_col=entry_col,
         **mechanisms
