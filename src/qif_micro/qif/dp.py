@@ -166,8 +166,9 @@ def geometric(
 
     # Create a grid of distances |a - b|
     # Broadcasting: input_domain (n rows, 1) - output_domain (1, n cols)
-    distances = input_domain[:, np.newaxis] - output_domain[np.newaxis, :]
-    distances = np.abs(distances)
+    distances = np.abs(
+        input_domain[:, np.newaxis] - output_domain[np.newaxis, :]
+    )
 
     # Calculate the base weights: alpha^|a - b| / (1 + alpha)
     base_weights = np.power(alpha, distances) / (1 + alpha)
@@ -313,6 +314,14 @@ def random_response(
     p_keep = exp_eps / (exp_eps + domain_size - 1)
     p_replace = 1 / (exp_eps + domain_size - 1)
 
-    matches = input_domain[:, np.newaxis] == output_domain[np.newaxis, :]
-    dist = np.where(matches, p_keep, p_replace)
+    # Initialize with p_replace, then set matching positions to p_keep
+    # This avoids creating a full boolean matrix for the comparison
+    dist = np.full((n_rows, n_cols), p_replace, dtype=np.float64)
+    
+    # Find positions where input values match output values
+    # Both domains are sorted (from np.unique), so binary search is efficient
+    indices = np.searchsorted(output_domain, input_domain, side="left")
+    mask = (indices < n_cols) & (output_domain[indices] == input_domain)
+    dist[np.arange(n_rows)[mask], indices[mask]] = p_keep
+    
     return Channel(dist)
