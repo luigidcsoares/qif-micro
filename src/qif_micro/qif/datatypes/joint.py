@@ -75,7 +75,12 @@ class Joint:
         for i, s in enumerate(dist):
             msg = "``dist`` must be 2-dimensional!"
             if s.ndim != 2: raise ValueError(msg)
-            dist[i] = (s.data if sp.issparse(s) else s).ravel()[np.newaxis, :] 
+
+
+        dist = [
+            (s.data if sp.issparse(s) else s).ravel()[np.newaxis, :] 
+            for s in dist
+        ]
             
         dist_check = _is_dist_valid(dist)
 
