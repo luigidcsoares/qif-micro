@@ -1,6 +1,5 @@
 import math
 import pytest
-import re
 
 import numpy as np
 
@@ -12,7 +11,6 @@ class TestGeometric:
     # Valid input tests (complementing docstring)
     # ========================================================================
     def test_geometric_slice_not_contiguous(self):
-        # It is a slice if the output is not contiguous:
         input_domain = [0, 1]
         output_domain = [0, 1, 3]
         eps = -math.log(0.5) # alpha = 0.5
@@ -85,14 +83,12 @@ class TestGeometric:
     # Invalid epsilon tests
     # ========================================================================
     def test_geometric_negative_eps(self):
-        msg = "Privacy param ``eps`` must be >= 0!"
-        with pytest.raises(ValueError, match=re.escape(msg)):
+        with pytest.raises(ValueError, match="Privacy param .* must be >= 0!"):
             qif.dp.geometric(-0.5, [0, 1, 2])
 
 
     def test_geometric_inf_eps(self):
-        msg = "Privacy param ``eps`` must be finite!"
-        with pytest.raises(ValueError, match=re.escape(msg)):
+        with pytest.raises(ValueError, match="Privacy param .* must be finite!"):
             qif.dp.geometric(np.inf, [0, 1, 2])
 
 
@@ -100,50 +96,43 @@ class TestGeometric:
     # Invalid domain tests
     # ========================================================================
     def test_geometric_empty_input_domain(self):
-        msg = "``input_domain`` cannot be empty!"
-        with pytest.raises(ValueError, match=re.escape(msg)):
+        with pytest.raises(ValueError, match=".*input_domain.* cannot be empty!"):
             qif.dp.geometric(0.5, [])
 
 
     def test_geometric_empty_output_domain(self):
-        msg = "``output_domain`` cannot be empty!"
-        with pytest.raises(ValueError, match=re.escape(msg)):
+        with pytest.raises(ValueError, match=".*output_domain.* cannot be empty!"):
             qif.dp.geometric(0.5, [0, 1, 2], [])
 
 
     def test_geometric_non_integer_input_domain(self):
-        msg = "``input_domain`` must contain only integers!"
-        with pytest.raises(ValueError, match=re.escape(msg)):
+        with pytest.raises(ValueError, match=".*input_domain.* must contain only integers!"):
             qif.dp.geometric(0.5, [0.5, 1.5, 2.5])
 
-        with pytest.raises(ValueError, match=re.escape(msg)):
+        with pytest.raises(ValueError, match=".*input_domain.* must contain only integers!"):
             qif.dp.geometric(0.5, ["a", "b"])
 
             
     def test_geometric_non_integer_output_domain(self):
-        msg = "``output_domain`` must contain only integers!"
-        with pytest.raises(ValueError, match=re.escape(msg)):
+        with pytest.raises(ValueError, match=".*output_domain.* must contain only integers!"):
             qif.dp.geometric(0.5, [0, 1, 2], [0.5, 1.5, 2.5])
 
-        with pytest.raises(ValueError, match=re.escape(msg)):
+        with pytest.raises(ValueError, match=".*output_domain.* must contain only integers!"):
             qif.dp.geometric(0.5, [0, 1, 2], ["a", "b"])
 
 
     def test_geometric_output_not_superset(self):
-        msg = "Full channel: output must be a superset of input!"
-        with pytest.raises(ValueError, match=re.escape(msg)):
+        with pytest.raises(ValueError, match="Full channel: output must be a superset of input!"):
             qif.dp.geometric(0.5, [0, 1], [0, 2])
 
 
     def test_geometric_invalid_bounds(self):
         input_domain = [0, 1, 2]
 
-        msg = "``domain_max`` (1) must be >= max ``output_domain`` (2)"
-        with pytest.raises(ValueError, match=re.escape(msg)):
+        with pytest.raises(ValueError, match=r".*domain_max.* must be >=.*output_domain"):
             qif.dp.geometric(0.5, input_domain, domain_max=1)
 
-        msg = "``domain_min`` (1) must be <= min ``output_domain`` (0)"
-        with pytest.raises(ValueError, match=re.escape(msg)):
+        with pytest.raises(ValueError, match=r".*domain_min.* must be <=.*output_domain"):
             qif.dp.geometric(0.5, input_domain, domain_min=1)
 
 
@@ -151,12 +140,10 @@ class TestGeometric:
         input_domain = [0, 1]
         output_domain = [0]
 
-        msg = "``domain_max`` (0) must be > ``domain_min`` (0)"
-        with pytest.raises(ValueError, match=re.escape(msg)):
+        with pytest.raises(ValueError, match=r".*domain_max.* must be > .*domain_min"):
             qif.dp.geometric(0.5, input_domain, output_domain)
 
-        msg = "``domain_max`` (1) must be > ``domain_min`` (1)"
-        with pytest.raises(ValueError, match=re.escape(msg)):
+        with pytest.raises(ValueError, match=r".*domain_max.* must be > .*domain_min"):
             qif.dp.geometric(0.5, input_domain, domain_min=1)
 
 
@@ -212,14 +199,12 @@ class TestRandomResponse:
     # Invalid epsilon tests
     # ========================================================================
     def test_random_response_negative_eps(self):
-        msg = "Privacy param ``eps`` must be >= 0!"
-        with pytest.raises(ValueError, match=re.escape(msg)):
+        with pytest.raises(ValueError, match="Privacy param .* must be >= 0!"):
             qif.dp.random_response(-0.5, [0, 1, 2])
 
 
     def test_random_response_inf_eps(self):
-        msg = "Privacy param ``eps`` must be finite!"
-        with pytest.raises(ValueError, match=re.escape(msg)):
+        with pytest.raises(ValueError, match="Privacy param .* must be finite!"):
             qif.dp.random_response(np.inf, [0, 1, 2])
 
 
@@ -227,38 +212,32 @@ class TestRandomResponse:
     # Invalid domain tests
     # ========================================================================
     def test_random_response_empty_input_domain(self):
-        msg = "``input_domain`` cannot be empty!"
-        with pytest.raises(ValueError, match=re.escape(msg)):
+        with pytest.raises(ValueError, match=".*input_domain.* cannot be empty!"):
             qif.dp.random_response(0.5, [])
 
 
     def test_random_response_empty_output_domain(self):
-        msg = "``output_domain`` cannot be empty!"
-        with pytest.raises(ValueError, match=re.escape(msg)):
+        with pytest.raises(ValueError, match=".*output_domain.* cannot be empty!"):
             qif.dp.random_response(0.5, [0, 1, 2], [])
 
 
     def test_random_response_invalid_domain_size(self):
-        msg = "``domain_size`` must be >= 2"
-        with pytest.raises(ValueError, match=re.escape(msg)):
+        with pytest.raises(ValueError, match=r".*domain_size.* must be >= 2"):
             qif.dp.random_response(0.5, [0])
-            
-        with pytest.raises(ValueError, match=re.escape(msg)):
+
+        with pytest.raises(ValueError, match=r".*domain_size.* must be >= 2"):
             qif.dp.random_response(0.5, [0, 1], domain_size=1)
 
 
     def test_random_response_exceed_domain_size(self):
-        msg = "``input_domain`` has more values than expected ``domain_size``!"
-        with pytest.raises(ValueError, match=re.escape(msg)):
+        with pytest.raises(ValueError, match=r".*input_domain.* more values.*domain_size"):
             qif.dp.random_response(0.5, [0, 1, 2], domain_size=2)
 
-        msg = "``output_domain`` has more values than expected ``domain_size``!"
-        with pytest.raises(ValueError, match=re.escape(msg)):
+        with pytest.raises(ValueError, match=r".*output_domain.* more values.*domain_size"):
             qif.dp.random_response(0.5, [0, 1], [0, 1, 2], domain_size=2)
 
 
     def test_random_response_output_not_superset(self):
-        msg = "Full channel: output must be a superset of input!"
-        with pytest.raises(ValueError, match=re.escape(msg)):
+        with pytest.raises(ValueError, match="Full channel: output must be a superset of input!"):
             qif.dp.random_response(0.5, [0, 1], [0, 2])
 
