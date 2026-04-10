@@ -22,10 +22,9 @@ class _Check:
     
 @multimethod
 def _is_dist_valid(dist: Sequence[Slice]) -> _Check:
-    inner_data = [s.data if sp.issparse(s) else s for s in dist]
-    
-    has_negative = np.any([np.any(s < 0) for s in inner_data])
-    if has_negative: return _Check(error=_Error.NEGATIVE_VALUES)
+    for s in dist:
+        data = s.data if sp.issparse(s) else s
+        if np.any(data < 0): return _Check(error=_Error.NEGATIVE_VALUES)
 
     reduce_fn = lambda acc, s: acc + s.sum(axis=1)
     row_sum = reduce(reduce_fn, dist[1:], dist[0].sum(axis=1))

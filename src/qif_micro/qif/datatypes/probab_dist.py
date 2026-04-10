@@ -62,9 +62,10 @@ class ProbabDist:
         if self.dist.ndim != 1:
             raise ValueError("``dist`` must be 1-dimensional!")
         
-        dist = self.dist[np.newaxis, :]
-        dist = dist.tocsr() if sp.issparse(dist) else dist
-        dist_check = _is_dist_valid(dist)
+        if sp.issparse(self.dist): dist_2d = self.dist[np.newaxis, :].tocsr()
+        else: dist_2d = self.dist[np.newaxis, :]
+        
+        dist_check = _is_dist_valid(dist_2d)
 
         if dist_check.error is _Error.NEGATIVE_VALUES:
             raise ValueError("Negative entries!")

@@ -72,12 +72,11 @@ class Joint:
         is_partitioned = isinstance(self.dist, Sequence)
         dist = self.dist if is_partitioned else [self.dist]
 
-        for s in dist:
+        for i, s in enumerate(dist):
             msg = "``dist`` must be 2-dimensional!"
             if s.ndim != 2: raise ValueError(msg)
-        
-        dist = [s.data if sp.issparse(s) else s for s in self.dist]
-        dist = [s.ravel()[np.newaxis, :] for s in dist]
+            dist[i] = (s.data if sp.issparse(s) else s).ravel()[np.newaxis, :] 
+            
         dist_check = _is_dist_valid(dist)
 
         if dist_check.error is _Error.NEGATIVE_VALUES:
