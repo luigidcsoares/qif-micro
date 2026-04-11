@@ -4,8 +4,9 @@ from dataclasses import dataclass, field
 import numpy as np
 import scipy.sparse as sp
 
-from qif_micro.qif.datatypes.typing import Slice
-from qif_micro.qif.datatypes._internal import _is_dist_valid, _Error
+from .typing import Slice
+from ._internal import _is_dist_valid, _Error
+
 
 @dataclass(frozen=True)
 class Joint:
@@ -41,26 +42,54 @@ class Joint:
 
     Examples
     --------
+    >>> import numpy as np
     >>> import scipy.sparse as sp
     >>> from qif_micro.qif.datatypes import Joint
 
-    >>> joint = Joint(sp.csr_array([
+    Consider the following channel matrix:
+    
+    >>> matrix = [
     ...     [1/16, 1/8, 1/16], # First row
     ...     [0,    1/2,    0], # Second row
     ...     [0,      0,  1/4]  # Third row
-    ... ]))
+    ... ]
 
-    >>> joint
+    We can either construct a dense representation of the joint:
+
+    >>> Joint(np.array(matrix))
+    Joint(dist=array([[0.0625, 0.125 , 0.0625],
+           [0.    , 0.5   , 0.    ],
+           [0.    , 0.    , 0.25  ]]), is_complete=True)
+
+    Or we can construct a sparse representation:
+
+    >>> j = Joint(sp.csr_array(matrix))
+    >>> j
     Joint(dist=<Compressed Sparse Row sparse array of dtype 'float64'
         with 5 stored elements and shape (3, 3)>, is_complete=True)
 
-    >>> joint.dist.toarray()
+    >>> j.dist.toarray()
     array([[0.0625, 0.125 , 0.0625],
            [0.    , 0.5   , 0.    ],
            [0.    , 0.    , 0.25  ]])
 
-    >>> joint.is_complete
-    True
+    The joint need not to be complete, it can be a slice (by columns):
+
+    >>> Joint(np.array(matrix)[:, [0, 2]])
+    Joint(dist=array([[0.0625, 0.0625],
+           [0.    , 0.    ],
+           [0.    , 0.25  ]]), is_complete=False)
+
+    And it may be partitioned (also by columns; perhaps for memory reasons):
+
+    >>> part0 = np.array(matrix)[:, [0, 1]]
+    >>> part1 = np.array(matrix)[:, [2]]
+    >>> Joint([part0, part1])
+    Joint(dist=[array([[0.0625, 0.125 ],
+           [0.    , 0.5   ],
+           [0.    , 0.    ]]), array([[0.0625],
+           [0.    ],
+           [0.25  ]])], is_complete=True)
     """
     dist: Slice | Sequence[Slice]
     is_complete: bool = field(init=False)
@@ -76,21 +105,15 @@ class Joint:
             msg = "``dist`` must be 2-dimensional!"
             if s.ndim != 2: raise ValueError(msg)
 
-
-        dist = [
-            (s.data if sp.issparse(s) else s).ravel()[np.newaxis, :] 
-            for s in dist
-        ]
-            
         dist_check = _is_dist_valid(dist)
 
         if dist_check.error is _Error.NEGATIVE_VALUES:
             raise ValueError("Negative entries!")
 
-        if dist_check.error is _Error.ROW_SUM_MISMATCH:
+        if dist_check.error is _Error.AXIS_SUM_MISMATCH:
             raise ValueError("Sum of joint distribution exceeds 1!")
         # ====================================================================
 
-        row_sum = dist_check.row_sum
-        is_complete = np.isclose(row_sum, 1.0).all()
+        axis_sum = dist_check.axis_sum
+        is_complete = np.isclose(axis_sum, 1.0).all()
         object.__setattr__(self, "is_complete", bool(is_complete))

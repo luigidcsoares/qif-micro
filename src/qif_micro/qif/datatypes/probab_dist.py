@@ -3,8 +3,8 @@ from dataclasses import dataclass, field
 import numpy as np
 import scipy.sparse as sp
 
-from qif_micro.qif.datatypes.typing import Slice 
-from qif_micro.qif.datatypes._internal import _is_dist_valid, _Error
+from ._internal import _is_dist_valid, _Error
+
 
 @dataclass(frozen=True)
 class ProbabDist:
@@ -12,14 +12,14 @@ class ProbabDist:
     Represents a probability distribution over a discrete domain.
 
     A probability distribution is a vector of non-negative values that sum to
-    at most 1 (exactly 1 for complete distributions). It can be stored in
-    dense format (numpy array) or sparse format (scipy.sparse.csr/csc_array).
+    at most 1 (exactly 1 for complete distributions). Stored in dense format
+    as a numpy array.
 
     Attributes
     ----------
-    dist : Slice, init? Yes
-        The probability vector. Can be 1D dense (numpy.ndarray) or sparse
-        (scipy.sparse.csr/csc_array). Represents probabilities over domain values.
+    dist : np.ndarray, init? Yes
+        The 1D probability vector as a dense numpy array. Represents
+        probabilities over domain values.
 
     is_complete : bool, init? No
         True if the sum of probabilities equals 1.0 (within numerical tolerance),
@@ -41,39 +41,36 @@ class ProbabDist:
     >>> import numpy as np
     >>> from qif_micro.qif.datatypes import ProbabDist
 
-    >>> pd = ProbabDist(np.array([1/4, 1/2, 1/4]))
-    >>> pd
-    ProbabDist(dist=array([0.25, 0.5 , 0.25]), is_complete=True)
+    Consider the following probability distribution:
 
-    >>> pd.is_complete
-    True
+    >>> dist = [1/4, 0, 3/4]
+    >>> ProbabDist(np.array(dist))
+    ProbabDist(dist=array([0.25, 0.  , 0.75]), is_complete=True)
 
-    >>> sub_prob = ProbabDist(np.array([0.2, 0.3]))
-    >>> sub_prob.is_complete
-    False
+    The distribution need not be complete; it can be a slice:
+
+    >>> ProbabDist(np.array([0.2, 0.3]))
+    ProbabDist(dist=array([0.2, 0.3]), is_complete=False)
     """
-    dist: Slice
+    dist: np.ndarray
     is_complete: bool = field(init=False)
 
     def __post_init__(self):
-        # ====================================================================
-        # Pre-conditions
-        # ====================================================================
+        if not isinstance(self.dist, np.ndarray):
+            raise ValueError("``dist`` must be ndarray!")
+
         if self.dist.ndim != 1:
             raise ValueError("``dist`` must be 1-dimensional!")
-        
-        if sp.issparse(self.dist): dist_2d = self.dist[np.newaxis, :].tocsr()
-        else: dist_2d = self.dist[np.newaxis, :]
-        
-        dist_check = _is_dist_valid(dist_2d)
+
+        dist_check = _is_dist_valid([self.dist])
 
         if dist_check.error is _Error.NEGATIVE_VALUES:
             raise ValueError("Negative entries!")
 
-        if dist_check.error is _Error.ROW_SUM_MISMATCH:
+        if dist_check.error is _Error.AXIS_SUM_MISMATCH:
             raise ValueError("Sum of probability distribution exceeds 1!")
         # ====================================================================
 
-        row_sum = dist_check.row_sum
-        is_complete = np.isclose(row_sum, 1.0).all()
+        axis_sum = dist_check.axis_sum
+        is_complete = np.isclose(axis_sum, 1.0).all()
         object.__setattr__(self, "is_complete", bool(is_complete))

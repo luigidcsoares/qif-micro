@@ -4,7 +4,7 @@ from multimethod import multimethod
 import numpy as np
 import scipy.sparse as sp
 
-from qif_micro.qif.datatypes import Channel, Joint, ProbabDist, Strategy
+from .datatypes import Channel, Joint, ProbabDist, Strategy, Hyper, StochMatrix
 
 def joint(pi: ProbabDist, ch: Channel) -> Joint:
     """
@@ -13,7 +13,7 @@ def joint(pi: ProbabDist, ch: Channel) -> Joint:
     Parameters
     ----------
     pi : ProbabDist
-        Prior probability distribution over the secret space.
+        Prior probability distribution over the domain of secret values.
 
     ch : Channel
         Stochastic channel (matrix) mapping secrets to observable outputs.
@@ -21,8 +21,6 @@ def joint(pi: ProbabDist, ch: Channel) -> Joint:
     Returns
     -------
     Joint
-        An object whose ``dist`` attribute holds the joint distribution
-        matrix (sparse or dense depending on the input channel).
 
     Examples
     --------
@@ -76,13 +74,13 @@ def joint(pi: ProbabDist, ch: Channel) -> Joint:
 
 
 @multimethod
-def hyper(pi: ProbabDist, ch: Channel) -> tuple[ProbabDist, Channel]:
+def hyper(pi: ProbabDist, ch: Channel) -> Hyper:
     """
     Pushes a prior through a channel to compute a hyper-distribution.
 
     Parameters
     ----------
-    The function is overloaded:
+    This function is overloaded:
 
     - ``hyper(pi, ch)``: accepts a :class:`ProbabDist` and a :class:`Channel`.
     - ``hyper(joint)``:  accepts a pre‑computed :class:`Joint` object.
@@ -101,14 +99,9 @@ def hyper(pi: ProbabDist, ch: Channel) -> tuple[ProbabDist, Channel]:
 
     Returns
     -------
-    tuple (ProbabDist, Channel)
-        - The outer distribution over outputs.
-        - The posterior distributions for each observation.
-          
-    See Also
-    --------
-    hyper(joint) : Overload that works directly on a :class:`Joint` object.
-    joint : Function that builds a joint distribution from a prior and a channe
+    Hyper
+        The hyper-distribution containing both the outer distribution over
+        outputs and the posterior distributions for each observation.
 
     Examples
     --------
@@ -124,34 +117,34 @@ def hyper(pi: ProbabDist, ch: Channel) -> tuple[ProbabDist, Channel]:
     ...     [0,     0,   1]  # Third row
     ... ]))
 
-    >>> outer, posteriors = qif.hyper(pi, ch)
-    >>> outer.dist
+    >>> h = qif.hyper(pi, ch)
+    >>> h.outer.dist
     array([0.0625, 0.625 , 0.3125])
 
-    >>> posteriors.dist.toarray().T
+    >>> h.posteriors.dist.toarray()
     array([[1. , 0.2, 0.2],
            [0. , 0.8, 0. ],
            [0. , 0. , 0.8]])
 
     It also works if the channel is not sparse:
-    
+
     >>> ch = Channel(ch.dist.toarray())
-    >>> outer, posteriors = qif.hyper(pi, ch)
-    >>> outer.dist
+    >>> h = qif.hyper(pi, ch)
+    >>> h.outer.dist
     array([0.0625, 0.625 , 0.3125])
 
-    >>> posteriors.dist.T
+    >>> h.posteriors.dist
     array([[1. , 0.2, 0.2],
            [0. , 0.8, 0. ],
            [0. , 0. , 0.8]])
 
     This function is overloaded to take a joint instead:
 
-    >>> outer, posteriors = qif.hyper(qif.joint(pi, ch))
-    >>> outer.dist
+    >>> h = qif.hyper(qif.joint(pi, ch))
+    >>> h.outer.dist
     array([0.0625, 0.625 , 0.3125])
 
-    >>> posteriors.dist.T
+    >>> h.posteriors.dist
     array([[1. , 0.2, 0.2],
            [0. , 0.8, 0. ],
            [0. , 0. , 0.8]])
@@ -160,7 +153,7 @@ def hyper(pi: ProbabDist, ch: Channel) -> tuple[ProbabDist, Channel]:
 
 
 @multimethod
-def hyper(joint: Joint) -> tuple[ProbabDist, Channel]:
+def hyper(joint: Joint) -> Hyper:
     is_partitioned = isinstance(joint.dist, Sequence)
     joint_dist = joint.dist if is_partitioned else [joint.dist]
 
@@ -171,19 +164,36 @@ def hyper(joint: Joint) -> tuple[ProbabDist, Channel]:
         # change the final result (as the cells will be 0 / 1):
         s_outer = s_outer.copy()
         s_outer[s_outer == 0] = 1
-        post_slice = (s_joint / s_outer).T
+        post_slice = s_joint / s_outer
         return post_slice.tocsr() if sp.issparse(s_joint) else post_slice
 
-    
     outer_dist = [s.sum(axis=0) for s in joint_dist]
     post_dists = [_mk_post(*p) for p in zip(joint_dist, outer_dist)]
-    post_dists = post_dists if len(post_dists) > 1 else post_dists[0]
-    outer_dist = np.hstack(outer_dist)
+    post_dists_combined = (
+        post_dists if len(post_dists) > 1 else post_dists[0]
+    )
+    outer_dist_combined = np.hstack(outer_dist)
 
-    outer = ProbabDist(outer_dist)
-    ch = Channel(post_dists)
+    outer = ProbabDist(outer_dist_combined)
+    posteriors = StochMatrix(post_dists_combined, dist_orient=0)
 
-    return outer, ch
+    return Hyper(outer, posteriors)
+
+
+def _mk_strategy(dist):
+    if not sp.issparse(dist): dist = sp.csr_array(dist)
+
+    rows, cols = dist.nonzero()
+    col_max = dist.max(axis=0).toarray()
+
+    mask_data = dist[rows, cols] == col_max[cols]
+    mask = sp.csr_array((mask_data, (rows, cols)), shape=dist.shape)
+    max_counts = mask.sum(axis=0)
+
+    st_data = mask_data / max_counts[mask.indices]
+    csr_repr = (st_data, mask.indices, mask.indptr)
+
+    return sp.csr_array(csr_repr, shape=dist.shape)
 
 
 @multimethod
@@ -224,22 +234,23 @@ def strategy(pi: ProbabDist) -> Strategy:
     >>> import numpy as np
     >>> import scipy.sparse as sp
     >>> from qif_micro import qif
-    >>> from qif_micro.qif.datatypes import Channel, ProbabDist
+    >>> from qif_micro.qif.datatypes import Channel, ProbabDist, Strategy
 
     Given the following prior knowledge, the adversary's strategy a priori
     (assuming the identity gain function) is to guess the second secret:
     
+    A strategy may be deterministic or probabilistic:
+    
     >>> pi = ProbabDist(np.array([1/4, 1/2, 1/4]))
-    >>> qif.strategy(pi).dist.toarray()
-    array([[0., 1., 0.]])
-
-    A strategy could also be probabilistic:
+    >>> qif.strategy(pi).dist
+    array([0., 1., 0.])
 
     >>> pi = ProbabDist(np.array([2/5, 1/5, 2/5]))
-    >>> qif.strategy(pi).dist.toarray()
-    array([[0.5, 0. , 0.5]])
+    >>> qif.strategy(pi).dist
+    array([0.5, 0. , 0.5])
 
-    After observing the output of a channel, the adv updates their strategy:
+    After observing the output of a channel, the adv updates their strategy.
+    With multiple outputs, the strategy is a 2D array:
     
     >>> ch = Channel(sp.csr_array([
     ...     [1/4, 1/2, 1/4], # First row
@@ -247,12 +258,18 @@ def strategy(pi: ProbabDist) -> Strategy:
     ...     [0,     0,   1]  # Third row
     ... ]))
 
-    >>> qif.strategy(pi, ch).dist.toarray()
-    array([[1. , 0. , 0. ],
-           [0.5, 0.5, 0. ],
+    >>> st = qif.strategy(pi, ch)
+    >>> st
+    Strategy(dist=<Compressed Sparse Row sparse array of dtype 'float64'
+        with 5 stored elements and shape (3, 3)>, is_complete=True)
+
+    >>> st.dist.toarray()
+    array([[1. , 0.5, 0. ],
+           [0. , 0.5, 0. ],
            [0. , 0. , 1. ]])
     """
-    return strategy(Joint(pi.dist[:, np.newaxis]))
+    st_dist = _mk_strategy(pi.dist[:, np.newaxis])
+    return Strategy(st_dist.toarray().ravel())
 
 
 @multimethod
@@ -265,22 +282,7 @@ def strategy(joint: Joint) -> Strategy:
     is_partitioned = isinstance(joint.dist, Sequence)
     joint_dist = joint.dist if is_partitioned else [joint.dist]
 
-    def _mk_strategy(dist):
-        dist = dist if sp.issparse(dist) else sp.csr_array(dist)
-
-        rows, cols = dist.nonzero()
-        col_max = dist.max(axis=0).toarray()
-    
-        mask_data = dist[rows, cols] == col_max[cols]
-        mask = sp.csr_array((mask_data, (rows, cols)), shape=dist.shape)
-        max_counts = mask.sum(axis=0)
-
-        st_data = mask_data / max_counts[mask.indices]
-        csr_repr = (st_data, mask.indices, mask.indptr)
-
-        return sp.csr_array(csr_repr, shape=dist.shape).T
-
     st_dist = [_mk_strategy(s) for s in joint_dist]
-    st_dist = st_dist if len(st_dist) > 1 else st_dist[0]
+    if len(st_dist) == 1: st_dist = st_dist[0]
 
-    return Channel(st_dist)
+    return Strategy(st_dist)

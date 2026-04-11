@@ -2,38 +2,45 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
 from functools import reduce
+import operator
 
-from multimethod import multimethod
 import numpy as np
 import scipy.sparse as sp
 
-from qif_micro.qif.datatypes.typing import Slice
+from .typing import Slice
+
 
 class _Error(Enum):
     NEGATIVE_VALUES = 1
-    ROW_SUM_MISMATCH = 2
+    AXIS_SUM_MISMATCH = 2
 
 
 @dataclass(frozen=True)
 class _Check:
     error: _Error | None = None
-    row_sum: np.ndarray | None = None
+    axis_sum: np.ndarray | None = None
 
-    
-@multimethod
-def _is_dist_valid(dist: Sequence[Slice]) -> _Check:
+
+def _is_dist_valid(
+    dist: Sequence[Slice],
+    dist_orient: int | None = None
+) -> _Check:
+    assert (dist_orient is None) or (dist_orient in [0, 1])
+
     for s in dist:
         data = s.data if sp.issparse(s) else s
         if np.any(data < 0): return _Check(error=_Error.NEGATIVE_VALUES)
 
-    reduce_fn = lambda acc, s: acc + s.sum(axis=1)
-    row_sum = reduce(reduce_fn, dist[1:], dist[0].sum(axis=1))
-    sum_is_one = np.isclose(row_sum, 1)
-    sum_exceeds_one = ((row_sum > 1) & ~sum_is_one).any()
-    if sum_exceeds_one: return _Check(error=_Error.ROW_SUM_MISMATCH)
+    # For dist_orient=1 (Channel/Joint): add row sums across partitions
+    # For dist_orient=0 (Hyper): check each partition's column sums
+    # independently (don't add across partitions)
+    reduce_fn = lambda acc, s: acc + s.sum(axis=dist_orient)
+    axis_sum = [s.sum(axis=dist_orient) for s in dist]
+    if dist_orient == 0: axis_sum = np.hstack(axis_sum)
+    else: axis_sum = reduce(operator.add, axis_sum)
 
-    return _Check(row_sum=row_sum)
-    
+    sum_is_one = np.isclose(axis_sum, 1)
+    sum_exceeds_one = ((axis_sum > 1) & ~sum_is_one).any()
+    if sum_exceeds_one: return _Check(error=_Error.AXIS_SUM_MISMATCH)
 
-@multimethod
-def _is_dist_valid(dist: Slice) -> _Error: return _is_dist_valid([dist])
+    return _Check(axis_sum=axis_sum)
