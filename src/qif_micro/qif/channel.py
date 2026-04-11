@@ -34,24 +34,33 @@ def identity(n: np.uint64) -> Channel:
 
 def reduced(ch: Channel) -> Channel:
     """
-    Reduce the columns of a channel by merging those that can be combined
-    without altering the channel’s meaning.
+    Reduce the columns of a channel by merging scalar multiples.
+
+    Merges columns that are scalar multiples of each other (i.e., proportionally
+    identical), combining their contributions while preserving the channel's
+    probabilistic semantics. This reduces dimensionality without changing the
+    information flow properties.
 
     Warning
     -------
     For channels with many columns this operation can be costly in both
-    execution time and, more importantly, memory consumption.
+    execution time and, more importantly, memory consumption. Complexity is
+    O(n_cols^2) time and O(n_cols * n_rows) memory.
+
+    Note
+    ----
+    Partitioned channels are not yet supported (TODO).
 
     Parameters
     ----------
-    channel : Channel
+    ch : Channel
         Stochastic channel (matrix) mapping secrets to observable outputs.
 
     Returns
     -------
     Channel
-        A new channel whose columns have been reduced while preserving the
-        original probabilistic semantics.
+        A new channel with scalar multiple columns merged, preserving the
+        original probabilistic semantics and representation (sparse/dense).
 
     Examples
     --------
@@ -64,7 +73,11 @@ def reduced(ch: Channel) -> Channel:
     array([[0.625     , 0.25      , 0.125     ],
            [0.83333333, 0.16666667, 0.        ]])
 
-    As expected, it also works with dense channel, preserving the dense repr:
+    Here, the first and fourth columns are scalar multiples (1/2 and 1/4),
+    so they are merged.
+
+    As expected, it also works with a dense channel, preserving the dense
+    representation:
 
     >>> qif.channel.reduced(Channel(ch.dist.toarray())).dist
     array([[0.625     , 0.25      , 0.125     ],
