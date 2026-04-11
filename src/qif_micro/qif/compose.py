@@ -9,7 +9,12 @@ from qif_micro.qif.datatypes import Channel
 def _dense_parallel(lhs: np.ndarray, rhs: np.ndarray):
     n_rows = lhs.shape[0]
     assert n_rows == rhs.shape[0]
-    return np.einsum("xy,xz->xyz", lhs, rhs).reshape(n_rows, -1)
+
+    # Clean-up all-zero columns
+    dist = np.einsum("xy,xz->xyz", lhs, rhs).reshape(n_rows, -1)
+    keep = dist.any(axis=0)
+
+    return dist[:, keep]
 
     
 def _sparse_parallel(lhs: np.ndarray, rhs: np.ndarray, return_cols: bool):
@@ -82,6 +87,9 @@ def parallel(
     """
     Parallel composition of two channels ``lhs`` and ``rhs``.
 
+    In parallel composition, each row of the result corresponds to the
+    Cartesian product of outputs from both channels.
+
     Parameters
     ----------
     lhs : Channel
@@ -115,24 +123,30 @@ def parallel(
         - The column labels (pairs);
         - The number of columns reduced.
 
+    Notes
+    -----
+    Partitioned channels (sequences of channel slices) are supported. In such
+    cases, the result will also be partitioned by the Cartesian product of
+    output partitions from both channels.
+
     Examples
     --------
     >>> import numpy as np
     >>> import scipy.sparse as sp
-    >>> from qif_micro.qif.compose import parallel
+    >>> from qif_micro import qif
     >>> from qif_micro.qif.datatypes import Channel
 
     Let us first consider the case of a dense representation:
     
     >>> lhs = Channel(np.array([[1/2, 1/4, 0, 1/4], [0, 1/6, 2/3, 1/6]]))
     >>> rhs = Channel(np.array([[2/3, 1/6, 1/6], [2/3, 1/3, 0]]))
-    >>> parallel(lhs, rhs).dist
+    >>> qif.compose.parallel(lhs, rhs).dist
     array([[0.33333333, 0.08333333, 0.08333333, 0.16666667, 0.04166667,
-                0.04166667, 0.        , 0.        , 0.        , 0.16666667,
-                0.04166667, 0.04166667],
-               [0.        , 0.        , 0.        , 0.11111111, 0.05555556,
-                0.        , 0.44444444, 0.22222222, 0.        , 0.11111111,
-                0.05555556, 0.        ]])
+            0.04166667, 0.        , 0.        , 0.16666667, 0.04166667,
+            0.04166667],
+           [0.        , 0.        , 0.        , 0.11111111, 0.05555556,
+            0.        , 0.44444444, 0.22222222, 0.11111111, 0.05555556,
+            0.        ]])
 
     Now notice how columns are reduced with a sparse repr:
     
@@ -147,7 +161,7 @@ def parallel(
     It is possible to retrieve the column pairs, noting that columns that
     have been reduced (on either side) will be paired with -1:
 
-    >>> parallel(lhs, rhs, return_cols=True)[1]
+    >>> qif.compose.parallel(lhs, rhs, return_cols=True)[1]
     array([[ 0, -1],
            [ 2, -1],
            [ 1,  0],
@@ -177,6 +191,10 @@ def parallel(
         par_dist = par_dist if len(par_dist) > 1 else par_dist[0]
         return Channel(par_dist)
         
+    # Make both sparses, if one of them is not:
+    lhs = list(map(sp.csr_array, lhs))
+    rhs = list(map(sp.csr_array, rhs))
+
     # If memory is not a concern (even though channels are sparse),
     # just do the parallel composition without any optimisation.
     if not opt_memory:
