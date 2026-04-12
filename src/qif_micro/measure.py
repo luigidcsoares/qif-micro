@@ -94,12 +94,12 @@ def linkage_risk(adv_model: Model) -> np.floating:
 
     # Pre-condition: baseline and st must be partitioned in the same way:
     if len(baseline_dist) != len(adv_st_dist):
-        raise ValueError("Baseline and Adv Strategy must have same partitions!")
+        raise ValueError("Baseline and Strategy must have same partitions!")
    
     # TODO: Consider other gain functions.
     #       This requires support for gain fn in the qif lib.
     expected_gain = baseline_dist
     return sum(
-        (s_gain * s_st.T).sum()
+        (s_gain * s_st).sum()
         for s_gain, s_st in zip(expected_gain, adv_st_dist)
     )
