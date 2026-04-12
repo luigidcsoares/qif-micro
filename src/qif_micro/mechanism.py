@@ -317,12 +317,9 @@ def record(
                 # For records with length > 1, it may be that we get
                 # a few entries compatible, but not all of them.
                 # In this case we must discard such records.
-                .group_by(record_col, f"{record_col}_right").agg("p")
-                .filter(pl.col("p").list.len() == l[0])
-
-                # Once we have only the compatible records, we can
-                # compute the probability as a product for each entry.
-                .with_columns(pl.col("p").list.agg(pl.element().product()))
+                .group_by(record_col, f"{record_col}_right")
+                .agg(pl.len(), pl.col("p").product())
+                .filter(pl.col("len") == l[0])
             )
 
             ch_metadata.append(metadata_l)
