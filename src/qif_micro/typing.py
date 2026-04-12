@@ -1,18 +1,10 @@
-from collections.abc import Iterable, Sequence
-from typing import Any, Protocol, runtime_checkable
+from typing import Any
 
 import polars as pl
 
-from qif_micro.qif.datatypes import Channel, Joint, Strategy
+from qif_micro.qif.datatypes import Joint, Strategy
 
-@runtime_checkable
-class AttrMechanism(Protocol):
-    def __call__(
-        self,
-        return_labels: bool = False,
-        **kwargs: Any,
-    ) -> Channel | tuple[Channel, Sequence[Any]]: ...
-        
+type DataFrame = pl.DataFrame | pl.LazyFrame
 
 # Keeping labels in memory is expensive, so use the lazy API:
 type MapLabels = pl.LazyFrame
@@ -25,8 +17,6 @@ type BaselineModel = (
 )
 
 type Model = tuple[Joint, Strategy]
-
-type DataFrame = pl.DataFrame | pl.LazyFrame
 
 type RecordEntry = dict[str, Any]
 type Record = list[RecordEntry]

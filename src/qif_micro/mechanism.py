@@ -1,7 +1,6 @@
 from collections.abc import Iterable 
 from typing import Any, Protocol, runtime_checkable
 
-from multimethod import multimethod
 import polars as pl
 import scipy.sparse as sp
 
@@ -18,7 +17,6 @@ class Mechanism(Protocol):
     ) -> Channel: ...
 
 
-@multimethod
 def record(
     input_domain: DataFrame,
     output_domain: DataFrame | None = None,
@@ -75,11 +73,15 @@ def record(
     --------------
     - ``input_domain`` must have ``record_col`` and ``entry_col`` columns
       (defaults: "record_id", "entry_id") identifying records and entries.
+
     - ``input_domain`` must contain at least one record.
+
     - If ``output_domain`` is provided, it must have the same structure as
       ``input_domain`` and contain at least one record.
+
     - All ``mechanisms`` keys must correspond to columns in the input domain
       (excluding ID columns).
+
     - Input and output domains must have compatible attributes (same set
       of attributes except possibly different mechanisms applied).
 
@@ -136,11 +138,24 @@ def record(
            [0.08333333, 0.25      , 0.16666667, 0.5       ]])
     """ 
     # ========================================================================
-    # Pre-conditions
+    # Pre-processing inputs
     # ========================================================================
+    as_df = lambda i, r:  pl.LazyFrame(r).with_columns(
+        pl.lit(i).alias(record_col),
+        pl.row_index(entry_col)
+    )
+
     if output_domain is None: output_domain = input_domain
-        
-    # Group the DataFrame by record and entry
+
+    if not isinstance(input_domain, (pl.DataFrame, pl.LazyFrame)):
+        input_domain = (as_df(i, r) for i, r in enumerate(input_domain))
+        input_domain = pl.concat(input_domain, how="diagonal")
+
+    if not isinstance(output_domain, (pl.DataFrame, pl.LazyFrame)):
+        output_domain = (as_df(i, r) for i, r in enumerate(output_domain))
+        output_domain = pl.concat(output_domain, how="diagonal")
+
+    # Group the DataFrames by record and entry
     input_domain = (
         input_domain
         .lazy()
@@ -159,6 +174,9 @@ def record(
         .unique()
     )
 
+    # ========================================================================
+    # Pre-conditions
+    # ========================================================================
     id_cols = {record_col, entry_col}
     attrs = set(output_domain.collect_schema()) - id_cols
     for input_attr in set(input_domain.collect_schema()) - id_cols:
@@ -210,6 +228,7 @@ def record(
     )
 
     preserve_attrs = attrs - set(transform_attrs)
+
     def _build_for(attr) -> Channel:
         # Min and max record length comes from the input domain
         min_record_len = (
@@ -323,32 +342,3 @@ def record(
     for attr in transform_attrs[1:]: ch_dist *= _build_for(attr)
 
     return Channel(ch_dist)
-
-
-@multimethod
-def record(
-    input_domain: Iterable[Record],
-    output_domain: Iterable[Record] | None = None,
-    record_col: str = "record_id",
-    entry_col: str = "entry_id",
-    **mechanisms: Mechanism,
-) -> Channel:
-    as_df = lambda i, r:  pl.LazyFrame(r).with_columns(
-        pl.lit(i).alias(record_col),
-        pl.row_index(entry_col)
-    )
-
-    input_domain = (as_df(i, r) for i, r in enumerate(input_domain))
-    input_domain = pl.concat(input_domain, how="diagonal")
-
-    if output_domain is not None:
-        output_domain = (as_df(i, r) for i, r in enumerate(output_domain))
-        output_domain = pl.concat(output_domain, how="diagonal")
-
-    return record(
-        input_domain,
-        output_domain,
-        record_col=record_col,
-        entry_col=entry_col,
-        **mechanisms
-    )

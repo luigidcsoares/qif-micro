@@ -1,6 +1,5 @@
 from collections.abc import Iterable, Sequence
 
-from multimethod import multimethod
 import numpy as np
 import polars as pl
 import scipy.sparse as sp
@@ -8,19 +7,19 @@ import scipy.sparse as sp
 from qif_micro import qif
 from qif_micro.qif.datatypes import Channel, Joint, ProbabDist, Strategy
 
+from qif_micro.mechanism import Mechanism
 from qif_micro.model import baseline
 from qif_micro.model._internal import _mk_long_dataset, _mk_records
 from qif_micro.typing import DataFrame, Model, Record
 from qif_micro._utils import _valid_columns
 
-@multimethod
 def build(
     pi: ProbabDist,
     records: DataFrame,
-    mechanism: Channel,
+    mechanism: Mechanism,
     baseline_dataset: DataFrame,
     sanitised_dataset: DataFrame,
-    hint: Iterable[str],
+    hint: str | Iterable[str],
     owner_col: str = "owner_id",
     record_col: str = "record_id",
     entry_col: str = "entry_id",
@@ -95,6 +94,7 @@ def build(
     >>> from functools import partial
     >>> import numpy as np
     >>> import polars as pl
+    >>> from qif_micro import qif
     >>> from qif_micro.qif.datatypes import ProbabDist
     >>> from qif_micro import mechanism
     >>> from qif_micro import model
@@ -117,9 +117,11 @@ def build(
     
     Then we construct the record-level mechanism:
      
-    >>> rr_q = partial(mechanism.random_response, p=2/3)
-    >>> rr_s = partial(mechanism.random_response, p=3/4)
-    >>> m = mechanism.record(records, q=rr_q, s=rr_s)
+    >>> eps_q = np.log(2) # p = 2/3
+    >>> eps_s = np.log(3) # p = 3/4
+    >>> rr_q = partial(qif.dp.random_response, eps=eps_q, domain_size=3)
+    >>> rr_s = partial(qif.dp.random_response, eps=eps_s, domain_size=2)
+    >>> m = partial(mechanism.record, q=rr_q, s=rr_s)
 
     Finally, we define the input and output datasets that we want to analyse:
 
@@ -137,7 +139,7 @@ def build(
     ...     "s":        [0, 0, 1, 1]
     ... })
     
-    >>> result = model.generic(pi, records, m, b_dataset, s_dataset, ["q"])
+    >>> result = model.generic(pi, records, m, b_dataset, s_dataset, "q")
     >>> baseline_joint, adv_st = result
 
     >>> baseline_joint.dist.toarray()
@@ -152,9 +154,12 @@ def build(
     correctly, but the noise makes them guess incorrectly for ``q = 1``:
     
     >>> adv_st.dist.toarray()
-    array([[1. , 0. , 0. , 0. , 0. , 0. ],
-           [0. , 0. , 0. , 1. , 0. , 0. ],
-           [0. , 0. , 0. , 0. , 0.5, 0.5]])
+    array([[1. , 0. , 0. ],
+           [0. , 0. , 0. ],
+           [0. , 0. , 0. ],
+           [0. , 1. , 0. ],
+           [0. , 0. , 0.5],
+           [0. , 0. , 0.5]])
 
     The domain of records can also be a DataFrame, in which case each row
     represents an entry and must have ``record_id`` and ``entry_id`` columns:
@@ -168,7 +173,7 @@ def build(
     ...     {"record_id": 5, "entry_id": 0, "q": 2, "s": 1},
     ... ])
 
-    >>> result = model.generic(pi, records, m, b_dataset, s_dataset, ["q"])
+    >>> result = model.generic(pi, records, m, b_dataset, s_dataset, "q")
     >>> baseline_joint, adv_st = result
            
     >>> baseline_joint.dist.toarray()
@@ -180,13 +185,25 @@ def build(
            [0.  , 0.  , 0.25]])
 
     >>> adv_st.dist.toarray()
-    array([[1. , 0. , 0. , 0. , 0. , 0. ],
-           [0. , 0. , 0. , 1. , 0. , 0. ],
-           [0. , 0. , 0. , 0. , 0.5, 0.5]])
+    array([[1. , 0. , 0. ],
+           [0. , 0. , 0. ],
+           [0. , 0. , 0. ],
+           [0. , 1. , 0. ],
+           [0. , 0. , 0.5],
+           [0. , 0. , 0.5]])
     """
     # ========================================================================
-    # Pre-conditions
+    # Pre-processing inputs
     # ========================================================================
+    as_df = lambda i, r:  pl.LazyFrame(r).with_columns(
+        pl.lit(i).alias(record_col),
+        pl.row_index(entry_col)
+    )
+
+    if not isinstance(records, (pl.DataFrame, pl.LazyFrame)):
+        records = (as_df(i, r) for i, r in enumerate(records))
+        records = pl.concat(records, how="diagonal")
+
     records = records.lazy()
     baseline_dataset = baseline_dataset.lazy()
     sanitised_dataset = sanitised_dataset.lazy()
@@ -194,6 +211,9 @@ def build(
     # Standardise ``hint`` input
     hint = [hint] if isinstance(hint, str) else hint
 
+    # ========================================================================
+    # Pre-conditions
+    # ========================================================================
     # Check the required attributes for the domain of records
     required = [record_col, entry_col, *hint]
     ok, missing = _valid_columns(records, required)
@@ -233,6 +253,7 @@ def build(
         .sort(record_col, entry_col)
         .select(record_col, entry_expr, *attr_cols)
         .pipe(_mk_records, record_col)
+        .collect(engine="streaming").lazy() # Cache
     )
 
     baseline_records = (
@@ -241,6 +262,7 @@ def build(
         .select(owner_col, entry_expr, *attr_cols)
         .pipe(_mk_records, owner_col)
         .join(records, on="record", how="left")
+        .collect(engine="streaming").lazy() # Cache
     )
     
     sanitised_records = (
@@ -249,11 +271,23 @@ def build(
         .select(owner_col, entry_expr, *attr_cols)
         .pipe(_mk_records, owner_col)
         .join(records, on="record", how="left")
+        .collect(engine="streaming").lazy() # Cache
+    )
+
+    # The input ``mechanism`` is a function that takes input and output
+    # domains of records, and returns the concrete mechanism (channel):
+    to_long_format = lambda df: df.explode("record").unnest("record")
+    input_domain = to_long_format(records)
+    output_domain = to_long_format(sanitised_records)
+    
+    mechanism_ch = mechanism(
+        input_domain=input_domain,
+        output_domain=output_domain.drop(owner_col).unique()
     )
 
     # Compute the posteriors and transpose, since the result is a channel
     # with outputs as the rows and we need them as columns.
-    hyper_mechanism = qif.hyper(pi, mechanism)[1].dist.T.tocoo()
+    hyper_mechanism = qif.hyper(pi, mechanism_ch).posteriors.dist.tocoo()
     data, rows, cols = hyper_mechanism.data, *hyper_mechanism.coords
     hyper_mechanism_df = pl.LazyFrame({"row": rows, "col": cols, "p": data})
 
@@ -374,36 +408,3 @@ def build(
     adv_st = qif.strategy(adv_joint)
 
     return baseline_joint, adv_st
-
-
-@multimethod
-def build(
-    pi: ProbabDist,
-    records: list | tuple,
-    mechanism: Channel,
-    baseline_dataset: DataFrame,
-    sanitised_dataset: DataFrame,
-    hint: Iterable[str],
-    owner_col: str = "owner_id",
-    record_col: str = "record_id",
-    entry_col: str = "entry_id",
-) -> Model:
-    as_df = lambda i, r:  pl.LazyFrame(r).with_columns(
-        pl.lit(i).alias(record_col),
-        pl.row_index(entry_col)
-    )
-
-    records = (as_df(i, r) for i, r in enumerate(records))
-    records = pl.concat(records, how="diagonal")
-
-    return build(
-        pi,
-        records,
-        mechanism,
-        baseline_dataset,
-        sanitised_dataset,
-        hint,
-        owner_col=owner_col,
-        record_col=record_col,
-        entry_col=entry_col,
-    )
