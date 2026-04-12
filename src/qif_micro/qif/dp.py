@@ -313,8 +313,9 @@ def random_response(
     
     # Find positions where input values match output values
     # Both domains are sorted (from np.unique), so binary search is efficient
-    indices = np.searchsorted(output_domain, input_domain, side="left")
-    mask = (indices < n_cols) & (output_domain[indices] == input_domain)
-    dist[np.arange(n_rows)[mask], indices[mask]] = p_keep
+    indices = np.searchsorted(input_domain, output_domain, side="left")
+    in_bounds = np.nonzero(indices < n_rows)[0]
+    matches = input_domain[indices[in_bounds]] == output_domain[in_bounds]
+    dist[indices[matches], np.nonzero(matches)[0]] = p_keep
     
     return Channel(dist)
