@@ -314,8 +314,14 @@ def random_response(
     # Find positions where input values match output values
     # Both domains are sorted (from np.unique), so binary search is efficient
     indices = np.searchsorted(input_domain, output_domain, side="left")
+
     in_bounds = np.nonzero(indices < n_rows)[0]
-    matches = input_domain[indices[in_bounds]] == output_domain[in_bounds]
+    in_bounds_input = input_domain[indices[in_bounds]]
+    in_bounds_output = output_domain[in_bounds]
+
+    matches = np.zeros(n_cols, dtype=bool)
+    matches[in_bounds] = in_bounds_input == in_bounds_output
+
     dist[indices[matches], np.nonzero(matches)[0]] = p_keep
     
     return Channel(dist)
