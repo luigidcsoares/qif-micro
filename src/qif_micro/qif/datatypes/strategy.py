@@ -5,9 +5,9 @@ import scipy.sparse as sp
 
 import numpy as np
 
-from .probab_dist import ProbabDist
-from .stoch_matrix import StochMatrix
-from .typing import Slice
+from qif_micro.qif.datatypes.probab_dist import ProbabDist
+from qif_micro.qif.datatypes.stoch_matrix import StochMatrix
+from qif_micro.qif.datatypes.typing import Slice
 
 
 @dataclass(frozen=True, repr=False)

@@ -2,8 +2,8 @@ from dataclasses import dataclass
 from collections.abc import Sequence
 import re
 
-from .stoch_matrix import StochMatrix
-from .typing import Slice
+from qif_micro.qif.datatypes.stoch_matrix import StochMatrix
+from qif_micro.qif.datatypes.typing import Slice
 
 
 @dataclass(frozen=True, repr=False)

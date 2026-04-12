@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import scipy.sparse as sp
 
-from ._internal import _is_dist_valid, _Error
+from qif_micro.qif.datatypes._validation import _is_dist_valid, _Error
 
 
 @dataclass(frozen=True)

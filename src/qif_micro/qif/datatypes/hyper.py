@@ -2,8 +2,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .probab_dist import ProbabDist
-from .stoch_matrix import StochMatrix
+from qif_micro.qif.datatypes.probab_dist import ProbabDist
+from qif_micro.qif.datatypes.stoch_matrix import StochMatrix
 
 
 @dataclass(frozen=True)

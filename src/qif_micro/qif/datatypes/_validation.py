@@ -7,7 +7,7 @@ import operator
 import numpy as np
 import scipy.sparse as sp
 
-from .typing import Slice
+from qif_micro.qif.datatypes.typing import Slice
 
 
 class _Error(Enum):

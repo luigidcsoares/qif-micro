@@ -4,7 +4,14 @@ from multimethod import multimethod
 import numpy as np
 import scipy.sparse as sp
 
-from .datatypes import Channel, Joint, ProbabDist, Strategy, Hyper, StochMatrix
+from qif_micro.qif.datatypes import (
+    Channel,
+    Joint,
+    ProbabDist,
+    Strategy,
+    Hyper,
+    StochMatrix
+)
 
 def joint(pi: ProbabDist, ch: Channel) -> Joint:
     """
