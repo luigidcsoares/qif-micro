@@ -301,7 +301,7 @@ def random_response(
     if is_complete and (diff_inp.shape[0] > 0):
         raise ValueError("Full channel: output must be a superset of input!")
     # ========================================================================
-     
+      
     # Derive probabilty of preserving or replacing input value from epsilon:
     exp_eps = np.exp(eps)
     p_keep = exp_eps / (exp_eps + domain_size - 1)
@@ -311,17 +311,20 @@ def random_response(
     # This avoids creating a full boolean matrix for the comparison
     dist = np.full((n_rows, n_cols), p_replace, dtype=np.float64)
     
-    # Find positions where input values match output values
-    # Both domains are sorted (from np.unique), so binary search is efficient
+    # Find positions where input values match output values using binary search.
+    # Both domains are sorted (from np.unique), so binary search is O(n log m).
     indices = np.searchsorted(input_domain, output_domain, side="left")
 
-    in_bounds = np.nonzero(indices < n_rows)[0]
+    # Create mask for valid matches. Check bounds first before indexing to avoid
+    # out-of-bounds errors, then filter both sides by in_bounds mask.
+    in_bounds = indices < n_rows
     in_bounds_input = input_domain[indices[in_bounds]]
     in_bounds_output = output_domain[in_bounds]
 
     matches = np.zeros(n_cols, dtype=bool)
     matches[in_bounds] = in_bounds_input == in_bounds_output
 
+    # Set matching cells to p_keep
     dist[indices[matches], np.nonzero(matches)[0]] = p_keep
     
     return Channel(dist)
