@@ -1,17 +1,19 @@
 from collections.abc import Sequence
 
-from multimethod import multimethod
 import numpy as np
 import scipy.sparse as sp
+from multimethod import multimethod
 
 from qif_micro.qif.datatypes import (
     Channel,
+    Hyper,
     Joint,
     ProbabDist,
+    StochMatrix,
     Strategy,
-    Hyper,
-    StochMatrix
 )
+from qif_micro.qif.datatypes.typing import is_partitioned
+
 
 def joint(pi: ProbabDist, ch: Channel) -> Joint:
     """
@@ -61,9 +63,7 @@ def joint(pi: ProbabDist, ch: Channel) -> Joint:
            [0.    , 0.5   , 0.    ],
            [0.    , 0.    , 0.25  ]])
     """
-    is_partitioned = isinstance(ch.dist, Sequence)
-
-    ch_dist = ch.dist if is_partitioned else [ch.dist]
+    ch_dist = ch.dist if is_partitioned(ch.dist) else [ch.dist]
     pi_dist = pi.dist[:, np.newaxis] 
 
     # If channel is sparse, the result will be in coo repr, so we convert to csr
@@ -76,8 +76,10 @@ def joint(pi: ProbabDist, ch: Channel) -> Joint:
     joint_dist = joint_dist if len(joint_dist) > 1 else joint_dist[0]
 
     # At this point, failure to build the joint is an implementation error
-    try: return Joint(joint_dist)
-    except Exception as e: assert False, f"Joint build failed: {e!r}"
+    try:
+        return Joint(joint_dist)
+    except Exception as e:
+        assert False, f"Joint build failed: {e!r}"
 
 
 @multimethod
@@ -160,9 +162,8 @@ def hyper(pi: ProbabDist, ch: Channel) -> Hyper:
 
 
 @multimethod
-def hyper(joint: Joint) -> Hyper:
-    is_partitioned = isinstance(joint.dist, Sequence)
-    joint_dist = joint.dist if is_partitioned else [joint.dist]
+def hyper(j: Joint) -> Hyper:  # noqa: F811
+    j_dist = j.dist if is_partitioned(j.dist) else [j.dist]
 
     # If joint is sparse, the result will be in coo repr, so we convert to csr
     def _mk_post(s_joint, s_outer):
@@ -174,8 +175,8 @@ def hyper(joint: Joint) -> Hyper:
         post_slice = s_joint / s_outer
         return post_slice.tocsr() if sp.issparse(s_joint) else post_slice
 
-    outer_dist = [s.sum(axis=0) for s in joint_dist]
-    post_dists = [_mk_post(*p) for p in zip(joint_dist, outer_dist)]
+    outer_dist = [s.sum(axis=0) for s in j_dist]
+    post_dists = [_mk_post(*p) for p in zip(j_dist, outer_dist)]
     post_dists_combined = (
         post_dists if len(post_dists) > 1 else post_dists[0]
     )
@@ -188,7 +189,8 @@ def hyper(joint: Joint) -> Hyper:
 
 
 def _mk_strategy(dist):
-    if not sp.issparse(dist): dist = sp.csr_array(dist)
+    if not sp.issparse(dist):
+        dist = sp.csr_array(dist)
 
     rows, cols = dist.nonzero()
     col_max = dist.max(axis=0).toarray()
@@ -280,12 +282,12 @@ def strategy(pi: ProbabDist) -> Strategy:
 
 
 @multimethod
-def strategy(pi: ProbabDist, ch: Channel) -> Strategy:
+def strategy(pi: ProbabDist, ch: Channel) -> Strategy:  # noqa: F811
     return strategy(joint(pi, ch))
 
 
 @multimethod
-def strategy(joint: Joint) -> Strategy:
+def strategy(joint: Joint) -> Strategy:  # noqa: F811
     is_partitioned = isinstance(joint.dist, Sequence)
     joint_dist = joint.dist if is_partitioned else [joint.dist]
 

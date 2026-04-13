@@ -2,10 +2,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 import numpy as np
-import scipy.sparse as sp
 
-from qif_micro.qif.datatypes.typing import Slice
-from qif_micro.qif.datatypes._validation import _is_dist_valid, _Error
+from qif_micro.qif.datatypes._validation import _Error, _is_dist_valid
+from qif_micro.qif.datatypes.typing import Slice, is_partitioned
 
 
 @dataclass(frozen=True)
@@ -98,10 +97,9 @@ class Joint:
         # ====================================================================
         # Pre-conditions
         # ====================================================================
-        is_partitioned = isinstance(self.dist, Sequence)
-        dist = self.dist if is_partitioned else [self.dist]
+        dist = self.dist if is_partitioned(self.dist) else [self.dist]
 
-        for i, s in enumerate(dist):
+        for s in dist:
             msg = "``dist`` must be 2-dimensional!"
             if s.ndim != 2: raise ValueError(msg)
 
@@ -115,5 +113,7 @@ class Joint:
         # ====================================================================
 
         axis_sum = dist_check.axis_sum
+        assert axis_sum is not None
+        
         is_complete = np.isclose(axis_sum, 1.0).all()
         object.__setattr__(self, "is_complete", bool(is_complete))

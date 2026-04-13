@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, TypeIs
 
 import polars as pl
 
@@ -20,3 +20,7 @@ type Model = tuple[Joint, Strategy]
 
 type RecordEntry = dict[str, Any]
 type Record = list[RecordEntry]
+
+
+def is_dataframe(x: Any) -> TypeIs[DataFrame]:
+    return isinstance(x, DataFrame.__value__.__args__)

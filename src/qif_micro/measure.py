@@ -1,43 +1,36 @@
 from collections.abc import Sequence
 
-from multimethod import multimethod
 import numpy as np
+from multimethod import multimethod
 
 from qif_micro import qif
 from qif_micro.qif.datatypes import Joint
-
 from qif_micro.typing import BaselineModel, Model
+
 
 @multimethod
 def linkage_risk(adv_model: BaselineModel) -> np.floating:
     """
-    Measures the risk with respect to a linkage attack where an adversary
-    combines some auxiliary information (obtained via external sources)
-    with the dataset released via a privacy-preserving pipeline,
-    and tries to infer some sensitive information about a target.
-    
+    Privacy risk with respect to a linkage attack.
+
+    Computes the Bayes vulnerability of the adversary's posterior after
+    observing the released dataset, assuming the adversary combines external
+    auxiliary information with the sanitised data to infer a target's record.
+
     Parameters
     ----------
-    This function is overloaded:
+    adv_model : BaselineModel | Model
 
-    adv_model : BaselineModel
-        The result of :func:`qif_micro.model.baseline.build`, which assumes
-        an adversary who observed the real (de-identified) dataset.
-
-    adv_model : Model
-        All other models produced with :mod:`qif_micro.model`, which assumes
-        an adversary who observed the result of post-processing a dataset.
-    
     Returns
     -------
     np.floating
-        Probability of successful record inference by the adversary (0 to 1).
-    
+        Probability of successful record inference (0 to 1).
+
     Pre-conditions
     --------------
-    - The ``adv_model`` must be a valid result from a model builder function.
-    - For Model type: baseline and strategy must have the same partition structure.
-    
+    - If ``adv_model`` is ``Model``: baseline and strategy must have the same
+      partition structure (same number of partitions).
+
     Examples
     --------
     >>> import polars as pl
@@ -78,12 +71,12 @@ def linkage_risk(adv_model: BaselineModel) -> np.floating:
     """
     # TODO: Consider other gain functions.
     #       This requires support for gain fn in the qif lib.
-    joint = adv_model if isinstance(adv_model, Joint) else adv_model[:1]
-    return qif.measure.bayes.posterior(joint)
+    j = adv_model if isinstance(adv_model, Joint) else adv_model[:1]
+    return qif.measure.bayes.posterior(j)
 
 
 @multimethod
-def linkage_risk(adv_model: Model) -> np.floating:
+def linkage_risk(adv_model: Model) -> np.floating:  # noqa: F811
     baseline, adv_st = adv_model[:2]
 
     is_partitioned = isinstance(baseline.dist, Sequence)
@@ -99,7 +92,5 @@ def linkage_risk(adv_model: Model) -> np.floating:
     # TODO: Consider other gain functions.
     #       This requires support for gain fn in the qif lib.
     expected_gain = baseline_dist
-    return sum(
-        (s_gain * s_st).sum()
-        for s_gain, s_st in zip(expected_gain, adv_st_dist)
-    )
+    slice_args = zip(expected_gain, adv_st_dist)
+    return sum((s_gain * s_st).sum() for s_gain, s_st in slice_args)

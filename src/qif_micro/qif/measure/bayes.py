@@ -1,10 +1,10 @@
-from collections.abc import Sequence
-
-from multimethod import multimethod
 import numpy as np
+from multimethod import multimethod
 
 from qif_micro import qif
 from qif_micro.qif.datatypes import Channel, Joint, ProbabDist
+from qif_micro.qif.datatypes.typing import Slice
+
 
 def prior(pi: ProbabDist) -> np.floating:
     """
@@ -90,7 +90,10 @@ def posterior(pi: ProbabDist, ch: Channel) -> np.floating:
 
 
 @multimethod
-def posterior(joint: Joint) -> np.floating:
-    is_partitioned = isinstance(joint.dist, Sequence)
-    joint_dist = joint.dist if is_partitioned else [joint.dist]
-    return sum(s.max(axis=0).sum() for s in joint_dist)
+def posterior(j: Joint) -> np.floating:  # noqa: F811
+    if isinstance(j.dist, Slice.__value__.__args__): 
+        dist = [j.dist]
+    else:
+        dist = j.dist
+
+    return sum(s.max(axis=0).sum() for s in dist)

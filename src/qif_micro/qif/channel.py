@@ -5,6 +5,7 @@ import scipy.sparse as sp
 
 from qif_micro.qif.datatypes import Channel
 
+
 def identity(n: np.uint64) -> Channel:
     """
     Parameters
@@ -102,7 +103,7 @@ def reduced(ch: Channel) -> Channel:
     # We use their byte representation for a lookup.
     #
     # TODO: Any vectorised implementation of this?
-    to_bytes = lambda col: np.ascontiguousarray(col.toarray()).tobytes()
+    def to_bytes(col): return np.ascontiguousarray(col.toarray()).tobytes()
     
     n_cols = norm_cols.shape[1]
     bytes_to_id = {}

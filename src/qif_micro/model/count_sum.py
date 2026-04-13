@@ -8,7 +8,7 @@ import polars as pl
 import scipy.sparse as sp
 
 from qif_micro import qif
-from qif_micro.qif.datatypes import Channel, Joint, ProbabDist, Strategy
+from qif_micro.qif.datatypes import Channel, Joint, ProbabDist
 
 from qif_micro.model import baseline
 from qif_micro.model._internal import _mk_long_dataset, _mk_records
@@ -24,79 +24,77 @@ def build(
     group_by_col: str | None = None,
     owner_col: str = "owner_id",
     entry_col: str = "entry_id",
-    return_owners: bool = False,
-    return_labels: bool = False
 ) -> Model:
     """
-    Build the adversary's strategies given the result of a query of the form
+    Build adversary strategies from a count-sum query as follows
 
     .. code-block:: sql
         SELECT count(*) as count_col, sum(agg_col) as sum_col
         FROM datasets
         GROUP_BY owner_col, group_by_col
 
-    We only return the adversary's strategies with respect to the outputs that
-    are possible in practice, considering the original datasets.
-
-    This function assumes that the adversary's prior knowledge on records
-    (and consequently on datasets) is uniform.
+    Constructs a joint distribution and strategy representing an adversary's
+    knowledge after observing aggregated statistics (count and sum) grouped
+    by owner and optional group attribute.
 
     Parameters
     ----------
     This function is overloaded:
 
     - ``build(dataset, ...)``: accepts a single :class:`DataFrame`
-    - ``build([d0, d1, ...], ...)``: accepts a sequence of :class:`DataFrame`
+    - ``build([d0, d1, ...], ...)``: accepts an iterable of DataFrames
 
     dataset : DataFrame
-        A dataset containing owners, hints and sensitive attributes.
+        A dataset in wide format where each row is an entry of a record,
+        and each column is a record attribute.
         (First overload)
 
     datasets : Iterable[DataFrame]
-        One or more datasets containing owners, hints and sensitive attributes.
+        One or more datasets with the same structure
+        (all containing the same set of owners).
         (Second overload)
 
-    agg_col : str, optional (Default: ``agg``)
-        Column name used in the sum aggregation (must be an integer).
-        
-    count_col : str, optional (default: ``"count"``)
-        Column name used as alias for the result of the count aggregation.
+    agg_col : str, optional (default: "agg")
+        Column name used for aggregation (sum). Must contain integers.
 
-    sum_col : str, optional (default: ``"sum"``)
-        Column name used as alias for the result of the sum aggregation.
+    count_col : str, optional (default: "count")
+        Name for the count aggregation result column.
+
+    sum_col : str, optional (default: "sum")
+        Name for the sum aggregation result column.
 
     group_by_col : str | None, optional (default: None)
-        Column name used in the group-by operation.
-        
-    owner_col : str, optional (default: ``"owner_id"``)
+        Optional column name for the group-by operation.
+
+    owner_col : str, optional (default: "owner_id")
         Column name for the owner identifier.
 
-    entry_col : str, optional (default: ``"entry_id"``)
-        Column name for the entry identifier (for longitudinal records).
-
-    return_owners : bool, optional (default: ``False``)
-        If true, the result includes a map from owners to row indices.
-
-    return_labels : bool, optional (default: ``False``)
-        If true, the result includes maps for counts and sums to column indices.
+    entry_col : str, optional (default: "entry_id")
+        Column name for the entry identifier within each record.
 
     Returns
     -------
-    Joint
-        The baseline joint knowledge.
-
-    Strategy
-        The adversary's strategies for each valid output (given the baseline).
+    tuple[Joint, Strategy]
+        A pair (baseline_joint, adv_st) where:
+        - baseline_joint: Joint distribution over aggregated records and hints
+        - adv_st: Adversary's strategy (posterior) for inferring records
 
     Pre-conditions
     --------------
-    - Each dataset must be in "wide" format: each row is one entry of a record,
-      each column is a record attribute.
-    - Must have a column identifying record owners (default: ``"owner_id"``).
-    - Must have a column identifying entries within records (default: ``"entry_id"``).
-    - All datasets must contain the same set of owners.
+    - Each dataset must be in wide format: one row per entry, columns are
+      attributes, with owner and entry identifier columns.
+
+    - Owner column (default "owner_id") must exist.
+
+    - Entry column (default "entry_id") must exist.
+
     - The ``agg_col`` must be an integer-typed column.
-    - If ``group_by_col`` is specified, all datasets must have this column.
+
+    - If ``group_by_col`` is provided, it must exist in all datasets.
+
+    - All datasets must contain the same set of owners.
+
+    - At least one dataset must be provided.
 
     Examples
     -------
@@ -177,11 +175,11 @@ def build(
          datasets[0]
          .select(owners_expr)
          .collect(engine="streaming")
-         .to_series()
+         .to_series()  # ty:ignore[unresolved-attribute]
      )
 
     orig_cols = _filter_optional([agg_col, group_by_col])
-    for i, dataset in enumerate(datasets):
+    for dataset in datasets:
         required = [owner_col, entry_col, *orig_cols]
         ok, missing = _valid_columns(dataset, required)
 
@@ -198,7 +196,7 @@ def build(
              dataset
              .select(owners_expr)
              .collect(engine="streaming")
-             .to_series()
+             .to_series() # ty:ignore[unresolved-attribute] we dont have InProcessQuery
          )
 
         if owners_i != owners:
@@ -255,7 +253,7 @@ def build(
         .sort("agg_record")
         .select("p")
         .collect(engine="streaming")
-        .to_numpy()
+        .to_numpy()  # ty:ignore[unresolved-attribute]
         .ravel()
     )
 
@@ -273,13 +271,13 @@ def build(
         .agg(pl.col("p").sum())
         .collect(engine="streaming")
     )
+    
+    n_rows = joint_agg_metadata.select(pl.col("agg_record").max() + 1).item()  # ty:ignore[unresolved-attribute]
+    n_cols = joint_agg_metadata.select(pl.col("hint").max() + 1).item()  # ty:ignore[unresolved-attribute]
 
-    n_rows = joint_agg_metadata["agg_record"].max() + 1
-    n_cols = joint_agg_metadata["hint"].max() + 1
-
-    data = joint_agg_metadata["p"].to_numpy()
-    rows = joint_agg_metadata["agg_record"].to_numpy()
-    cols = joint_agg_metadata["hint"].to_numpy()
+    data = joint_agg_metadata["p"].to_numpy()  # ty:ignore[not-subscriptable]
+    rows = joint_agg_metadata["agg_record"].to_numpy()  # ty:ignore[not-subscriptable]
+    cols = joint_agg_metadata["hint"].to_numpy()  # ty:ignore[not-subscriptable]
 
     shape = (n_rows, n_cols)
     coo_repr = (data, (rows, cols))
@@ -291,15 +289,17 @@ def build(
     #
     # We first collect the valid columns (non-zero cells)
     # for each row (aggregated record) in the baseline.
-    indices = baseline_joint.dist.indices
-    sections = baseline_joint.dist.indptr[1:-1]
+    indices = baseline_joint.dist.indices  # ty:ignore[unresolved-attribute]
+    sections = baseline_joint.dist.indptr[1:-1]  # ty:ignore[unresolved-attribute]
     valid_cols = np.split(indices, sections)
 
     # Then we construct the metadata for the hint channnel:
     # for each aggregated record, we need the hint labels.
     # We standardise the hints as a list (in case this is not longitudinal).
     labels_schema = map_labels.collect_schema()
-    as_list = lambda c: c if labels_schema[c] == pl.List else pl.concat_list(c)
+
+    def as_list(c):
+        return c if labels_schema[c] == pl.List else pl.concat_list(c)
 
     ch_metadata = (
         pl.LazyFrame({"agg_record": range(n_rows), "hint": valid_cols})
@@ -396,12 +396,12 @@ def build(
         .collect(engine="streaming")
     )
 
-    n_rows = ch_metadata["agg_record"].max() + 1
-    n_cols = ch_metadata["hint"].max() + 1
+    n_rows = ch_metadata.select(pl.col("agg_record").max() + 1).item()  # ty:ignore[unresolved-attribute]
+    n_cols = ch_metadata.select(pl.col("hint").max() + 1).item()  # ty:ignore[unresolved-attribute]
 
-    data = ch_metadata["p"].to_numpy()
-    rows = ch_metadata["agg_record"].to_numpy()
-    cols = ch_metadata["hint"].to_numpy()
+    data = ch_metadata["p"].to_numpy()  # ty:ignore[not-subscriptable]
+    rows = ch_metadata["agg_record"].to_numpy()  # ty:ignore[not-subscriptable]
+    cols = ch_metadata["hint"].to_numpy()  # ty:ignore[not-subscriptable]
 
     coo_repr = (data, (rows, cols))
     hint_ch_dist = sp.coo_array(coo_repr, shape=(n_rows, n_cols))
@@ -414,7 +414,7 @@ def build(
 
 
 @multimethod
-def build(
+def build(  # noqa: F811
     dataset: DataFrame,
     agg_col: str = "agg",
     count_col: str = "count",
@@ -422,12 +422,9 @@ def build(
     group_by_col: str | None = None,
     owner_col: str = "owner_id",
     entry_col: str = "entry_id",
-    return_owners: bool = False,
-    return_labels: bool = False
 ) -> Model:
     return build(
         [dataset],
         agg_col, count_col, sum_col, group_by_col,
-        owner_col, entry_col,
-        return_owners, return_labels
+        owner_col, entry_col
     )

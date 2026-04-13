@@ -5,6 +5,7 @@ import numpy as np
 
 from qif_micro.qif.datatypes import Channel
 
+
 def geometric(
     eps: float,
     input_domain: Iterable[Any],
@@ -111,9 +112,9 @@ def geometric(
     if eps < 0: raise ValueError("Privacy param ``eps`` must be >= 0!")
     if np.isinf(eps): raise ValueError("Privacy param ``eps`` must be finite!")
     
-    input_domain = np.unique(input_domain)
+    input_domain = np.unique(np.array(input_domain))
     if output_domain is None: output_domain = input_domain
-    else: output_domain = np.unique(output_domain)
+    else: output_domain = np.unique(np.array(output_domain))
 
     n_rows = input_domain.shape[0]
     n_cols = output_domain.shape[0]
@@ -277,9 +278,9 @@ def random_response(
     if eps < 0: raise ValueError("Privacy param ``eps`` must be >= 0!")
     if np.isinf(eps): raise ValueError("Privacy param ``eps`` must be finite!")
 
-    input_domain = np.unique(input_domain)
+    input_domain = np.unique(np.array(input_domain))
     if output_domain is None: output_domain = input_domain
-    else: output_domain = np.unique(output_domain)
+    else: output_domain = np.unique(np.array(output_domain))
 
     n_rows = input_domain.shape[0]
     n_cols = output_domain.shape[0]

@@ -1,13 +1,12 @@
-from dataclasses import dataclass
-from collections.abc import Sequence
 import re
-import scipy.sparse as sp
+from collections.abc import Sequence
+from dataclasses import dataclass
 
 import numpy as np
 
 from qif_micro.qif.datatypes.probab_dist import ProbabDist
 from qif_micro.qif.datatypes.stoch_matrix import StochMatrix
-from qif_micro.qif.datatypes.typing import Slice
+from qif_micro.qif.datatypes.typing import Slice, is_partitioned
 
 
 @dataclass(frozen=True, repr=False)
@@ -60,9 +59,11 @@ class Strategy:
 
     def __init__(self, dist: Slice | Sequence[Slice]):
         # ProbabDist will never be partitioned, so assume it is StochMatrix.
-        is_2d = isinstance(dist, Sequence) or dist.ndim > 1
-        inner = StochMatrix(dist, dist_orient=0) if is_2d else ProbabDist(dist)
-        object.__setattr__(self, "_inner", inner)
+        if is_partitioned(dist) or dist.ndim > 1:
+            object.__setattr__(self, "_inner", StochMatrix(dist, dist_orient=0))
+        else:
+            dist = dist if isinstance(dist, np.ndarray) else dist.toarray()
+            object.__setattr__(self, "_inner", ProbabDist(dist))
 
 
     @property

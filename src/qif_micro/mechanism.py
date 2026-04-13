@@ -1,4 +1,4 @@
-from collections.abc import Iterable 
+from collections.abc import Iterable
 from typing import Any, Protocol, runtime_checkable
 
 import polars as pl
@@ -6,7 +6,8 @@ import scipy.sparse as sp
 
 from qif_micro import qif
 from qif_micro.qif.datatypes import Channel
-from qif_micro.typing import DataFrame, Record
+from qif_micro.typing import DataFrame, is_dataframe, Record
+
 
 @runtime_checkable
 class Mechanism(Protocol):
@@ -18,72 +19,63 @@ class Mechanism(Protocol):
 
 
 def record(
-    input_domain: DataFrame,
-    output_domain: DataFrame | None = None,
+    input_domain: DataFrame | Iterable[Record],
+    output_domain: DataFrame | Iterable[Record] | None = None,
     record_col: str = "record_id",
     entry_col: str = "entry_id",
     **mechanisms: Mechanism,
 ) -> Channel:
     """
-    This function generates a mechanism from records to records,
-    based on attribute-level mechanisms.
+    Build a record-level mechanism from attribute-level mechanisms.
+
+    Constructs a stochastic matrix representing how records map to records
+    under the given privacy mechanisms applied to individual attributes.
 
     Parameters
     ----------
-    mechanisms : dict[str, Mechanism]
-        A mapping from attributes to mechanisms. If empty, this is
-        equivalent to applying the identity mechanism onto each attribute.
-        
-    input_domain : Iterable[Record]
-        An iterable of records (list of dicts).
-        (First overload)
+    input_domain : Iterable[Record] | DataFrame
+        The domain of input records.
+        - If ``Iterable[Record]``: a sequence of records (list of dicts).
+        - If ``DataFrame``: each row is an entry in a record, with columns
+          ``record_col`` and ``entry_col`` (defaults: "record_id", "entry_id")
+          identifying records and entries.
 
-    input_domain : DataFrame
-        A DataFrame where each row represents an entry in a record.
-        The DataFrame must have columns ``record_col`` and ``entry_col``
-        (by default ``"record_id"`` and ``"entry_id"``) identifying each
-        record and entry. Other columns represent the attributes.
-        (Second overload)
+    output_domain : Iterable[Record] or DataFrame, optional (default: None)
+        The domain of output records (same structure as ``input_domain``).
+        If omitted, defaults to ``input_domain``.
 
-    output_domain : Iterable[Record], optional (default: None)
-        An iterable of records with the same structure as ``input_domain``.
-        If omitted, we assume it is the same as ``input_domain``.
-        (First overload)
+    record_col : str, optional (default: "record_id")
+        Column name for the record identifier (DataFrame only).
 
-    output_domain: DataFrame, optional (default: None)
-        A DataFrame with the same structure as ``input_domain``.
-        If omitted, we assume it is the same as ``input_domain``.
-        (Second overload)
+    entry_col : str, optional (default: "entry_id")
+        Column name for the entry identifier within each record
+        (DataFrame only).
 
-    record_col : str, optional (default: ``"record_id"``)
-        Column name for the record identifier.
-
-    entry_col : str, optional (default: ``"entry_id"``)
-        Column name for the entry identifier within each record.
+    **mechanisms : Mechanism
+        Mapping from attribute names to privacy mechanisms. Each mechanism
+        is a callable taking (input_domain, output_domain) and returning a
+        Channel. If empty, applies identity to each attribute.
 
     Returns
     -------
     Channel
-        A channel matrix modelling the mechanism, where the i-th row
-        corresponds to the i-th record in the input domain; similarly,
-        the i-th column correspond to the i-th record in the output
-        domain.
+        A channel matrix where row i corresponds to input record i and
+        column j corresponds to output record j, representing the
+        probability of transforming one record to another.
 
     Pre-conditions
     --------------
-    - ``input_domain`` must have ``record_col`` and ``entry_col`` columns
-      (defaults: "record_id", "entry_id") identifying records and entries.
+    - For DataFrame inputs, ``record_col`` and ``entry_col`` columns must
+      exist and identify records and entries.
 
-    - ``input_domain`` must contain at least one record.
+    - Input domains must contain at least one record.
 
-    - If ``output_domain`` is provided, it must have the same structure as
-      ``input_domain`` and contain at least one record.
+    - If ``output_domain`` is provided, it must have compatible structure
+      (that is, same attributes as ``input_domain``).
 
-    - All ``mechanisms`` keys must correspond to columns in the input domain
-      (excluding ID columns).
+    - All mechanism keys must correspond to attribute columns in the domain
 
-    - Input and output domains must have compatible attributes (same set
-      of attributes except possibly different mechanisms applied).
+    - Mechanisms must accept domains and return valid Channels.
 
     Examples
     --------
@@ -140,18 +132,19 @@ def record(
     # ========================================================================
     # Pre-processing inputs
     # ========================================================================
-    as_df = lambda i, r:  pl.LazyFrame(r).with_columns(
+    def as_df(i, r): return pl.LazyFrame(r).with_columns(
         pl.lit(i).alias(record_col),
         pl.row_index(entry_col)
     )
 
-    if output_domain is None: output_domain = input_domain
+    if output_domain is None:
+        output_domain = input_domain
 
-    if not isinstance(input_domain, (pl.DataFrame, pl.LazyFrame)):
+    if not is_dataframe(input_domain):
         input_domain = (as_df(i, r) for i, r in enumerate(input_domain))
         input_domain = pl.concat(input_domain, how="diagonal")
 
-    if not isinstance(output_domain, (pl.DataFrame, pl.LazyFrame)):
+    if not is_dataframe(output_domain):
         output_domain = (as_df(i, r) for i, r in enumerate(output_domain))
         output_domain = pl.concat(output_domain, how="diagonal")
 
@@ -192,23 +185,26 @@ def record(
         input_domain
         .select(pl.col(record_col).n_unique())
         .collect(engine="streaming")
-        .item()
+        .item()  # ty:ignore[unresolved-attribute]
     )
 
-    if n_input == 0: raise ValueError("Input domain cannot be empty!")
+    if n_input == 0:
+        raise ValueError("Input domain cannot be empty!")
 
     n_output = (
         output_domain
         .select(pl.col(record_col).n_unique())
         .collect(engine="streaming")
-        .item()
+        .item()  # ty:ignore[unresolved-attribute]
     )
 
-    if n_output == 0: raise ValueError("Output domain cannot be empty!")
+    if n_output == 0:
+        raise ValueError("Output domain cannot be empty!")
 
     # If there are no mechanisms, this is just the identity channel.
     transform_attrs = list(mechanisms.keys())
-    if len(transform_attrs) == 0: return qif.channel.identity(n_input)
+    if len(transform_attrs) == 0:
+        return qif.channel.identity(n_input)
 
     # ========================================================================
     # We first get the record-level channel for each attr, taking into account
@@ -217,34 +213,19 @@ def record(
         input_domain
         .select(pl.col(record_col).max() + 1)
         .collect(engine="streaming")
-        .item()
+        .item()  # ty:ignore[unresolved-attribute]
     )
 
     n_output_records = (
         output_domain
         .select(pl.col(record_col).max() + 1)
         .collect(engine="streaming")
-        .item()
+        .item()  # ty:ignore[unresolved-attribute]
     )
 
     preserve_attrs = attrs - set(transform_attrs)
 
-    def _build_for(attr) -> Channel:
-        # Min and max record length comes from the input domain
-        min_record_len = (
-            input_domain
-            .select(pl.col(attr).list.len().min())
-            .collect(engine="streaming")
-            .item()
-        )
-
-        max_record_len = (
-            input_domain
-            .select(pl.col(attr).list.len().max())
-            .collect(engine="streaming")
-            .item()
-        )
-
+    def _build_for(attr):
         attr_input_domain = (
             input_domain
             .select(pl.col(attr).alias("row_label"))
@@ -260,12 +241,12 @@ def record(
         )
 
         ch = mechanisms[attr](
-            input_domain=attr_input_domain.to_series().to_list(),
-            output_domain=attr_output_domain.to_series().to_list(),
+            input_domain=attr_input_domain.to_series().to_list(),  # ty:ignore[unresolved-attribute]
+            output_domain=attr_output_domain.to_series().to_list(),  # ty:ignore[unresolved-attribute]
         )
 
-        map_row_labels = attr_input_domain.lazy().with_row_index("row")
-        map_col_labels = attr_output_domain.lazy().with_row_index("col")
+        map_row_labels = attr_input_domain.lazy().with_row_index("row")  # ty:ignore[unresolved-attribute]
+        map_col_labels = attr_output_domain.lazy().with_row_index("col")  # ty:ignore[unresolved-attribute]
 
         dist = sp.coo_array(ch.dist)
         data, rows, cols = dist.data, *dist.coords
@@ -286,7 +267,7 @@ def record(
             .explode("row_label")
             .with_columns(entry_expr)
             .collect(engine="streaming")
-            .partition_by("len", as_dict=True)
+            .partition_by("len", as_dict=True)  # ty:ignore[unresolved-attribute]
         )
 
         output_entries = (
@@ -296,15 +277,15 @@ def record(
             .explode("col_label")
             .with_columns(entry_expr)
             .collect(engine="streaming")
-            .partition_by("len", as_dict=True)
+            .partition_by("len", as_dict=True)  # ty:ignore[unresolved-attribute]
         )
 
-        join_cols = preserve_attrs | {"col_label", entry_col}
+        join_cols = list(preserve_attrs | {"col_label", entry_col})
         ch_metadata = []
         
-        for l in input_entries.keys():
-            input_part = input_entries[l].drop("len").lazy()
-            output_part = output_entries[l].drop("len").lazy()
+        for n_entries in input_entries.keys():
+            input_part = input_entries[n_entries].drop("len").lazy()
+            output_part = output_entries[n_entries].drop("len").lazy()
 
             metadata_l = (
                 # We first join with the mechanism to get the possible
@@ -319,7 +300,7 @@ def record(
                 # In this case we must discard such records.
                 .group_by(record_col, f"{record_col}_right")
                 .agg(pl.len(), pl.col("p").product())
-                .filter(pl.col("len") == l[0])
+                .filter(pl.col("len") == n_entries[0])
             )
 
             ch_metadata.append(metadata_l)
@@ -336,6 +317,8 @@ def record(
 
     # Then we combine each individual channel, element-wise:
     ch_dist = _build_for(transform_attrs[0])
-    for attr in transform_attrs[1:]: ch_dist *= _build_for(attr)
+
+    for attr in transform_attrs[1:]:
+        ch_dist *= _build_for(attr)
 
     return Channel(ch_dist)

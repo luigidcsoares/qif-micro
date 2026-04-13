@@ -3,14 +3,14 @@ from collections.abc import Iterable
 import polars as pl
 
 from qif_micro.typing import DataFrame
-from qif_micro._utils import _standard_cols
+
 
 def _mk_long_dataset(
     records: Iterable[DataFrame],
     owner_col: str = "owner_id",
 ) -> DataFrame:
     # First we construct the new the longitudinal records
-    record_idx_expr = lambda i: (
+    def record_idx_expr(i): return (
         pl.struct("record", pl.lit(i).alias("i")).alias("record")
     )
 

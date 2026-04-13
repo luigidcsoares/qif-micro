@@ -1,9 +1,8 @@
 from dataclasses import dataclass, field
 
 import numpy as np
-import scipy.sparse as sp
 
-from qif_micro.qif.datatypes._validation import _is_dist_valid, _Error
+from qif_micro.qif.datatypes._validation import _Error, _is_dist_valid
 
 
 @dataclass(frozen=True)
@@ -72,5 +71,7 @@ class ProbabDist:
         # ====================================================================
 
         axis_sum = dist_check.axis_sum
+        assert axis_sum is not None
+        
         is_complete = np.isclose(axis_sum, 1.0).all()
         object.__setattr__(self, "is_complete", bool(is_complete))

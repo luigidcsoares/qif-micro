@@ -1,6 +1,4 @@
-from dataclasses import dataclass, field
-
-import numpy as np
+from dataclasses import dataclass
 
 from qif_micro.qif.datatypes.probab_dist import ProbabDist
 from qif_micro.qif.datatypes.stoch_matrix import StochMatrix

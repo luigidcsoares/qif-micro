@@ -1,24 +1,26 @@
 from collections.abc import Iterable, Sequence
 from functools import reduce
 
-from multimethod import multimethod
 import numpy as np
 import polars as pl
 import scipy.sparse as sp
+from multimethod import multimethod
 
 from qif_micro import qif
-from qif_micro.qif.datatypes import Channel, Joint, ProbabDist
-
-from qif_micro.model._internal import _mk_long_dataset, _mk_records
-from qif_micro.typing import BaselineModel, DataFrame
 from qif_micro._utils import _valid_columns
+from qif_micro.model._internal import _mk_long_dataset, _mk_records
+from qif_micro.qif.datatypes import Channel, ProbabDist
+from qif_micro.typing import BaselineModel, DataFrame
+
 
 def _mk_long_prior(long_dataset : DataFrame) -> ProbabDist:
+    long_dataset = long_dataset.lazy()
+
     n_records = (
         long_dataset
         .select(pl.col("record").len())
         .collect(engine="streaming")
-        .item()
+        .item() # ty:ignore[unresolved-attribute] we dont have InProcessQuery
     )
 
     p_expr = (pl.len() / n_records).alias("p")
@@ -29,7 +31,7 @@ def _mk_long_prior(long_dataset : DataFrame) -> ProbabDist:
         .sort("record")
         .select("p")
         .collect(engine="streaming")
-        .to_numpy()
+        .to_numpy() # ty:ignore[unresolved-attribute] we dont have InProcessQuery
         .ravel()
     )
 
@@ -48,65 +50,86 @@ def build(
     return_labels: bool = False
 ) -> BaselineModel:
     """
-    Build the adversary’s knowledge model from a dataset and auxiliary info.
+    Build an adversary's baseline knowledge model from datasets.
+
+    Constructs a joint probability distribution over records, representing
+    the adversary's uncertainty after observing a de-identified dataset and
+    using auxiliary information (hints) as observations.
 
     Parameters
     ----------
     This function is overloaded:
 
     - ``build(dataset, ...)``: accepts a single :class:`DataFrame`
-    - ``build([d0, d1, ...], ...): accepts a sequence of :class:`DataFrame`
-    
+    - ``build([d0, d1, ...], ...)``: accepts an iterable of DataFrames
+
     dataset : DataFrame
-        A dataset containing owners, hints and sensitive attributes.
+        A dataset in wide format where each row is an entry of a record, and
+        each column is a record attribute. Must contain owner and entry ids.
         (First overload)
 
     datasets : Iterable[DataFrame]
-        One or more datasets containing owners, hints and sensitive attributes.
+        One or more datasets with the same structure
+        (all containing the same set of owners).
         (Second overload)
 
-    hint : str | iterable of str
-        Column names that represent the adversary’s auxiliary information.
+    hint : str | Iterable[str]
+        Column name(s) representing the adversary's auxiliary information.
+        These columns are observed and used as hints for inference.
 
-    owner_col : str, optional (default: ``"owner_id"``)
+    owner_col : str, optional (default: "owner_id")
         Column name for the owner identifier.
 
-    n_partitions : int, optional (default: ``1``)
-        Controls the number of partitions used to split the channel column-wise.
-        (Makes more sense for sparse channels, when memory is a concern.)
+    entry_col : str, optional (default: "entry_id")
+        Column name for the entry identifier within each record.
 
-    opt_memory : bool, optional (default: ``True``)
-        See the doc of ``qif.compose.parallel``
+    n_partitions : int, optional (default: 1)
+        Number of partitions for column-wise channel splitting (for memory
+        optimization with sparse channels).
 
-    return_owners : bool, optional (default: ``False``)
-        If true, the result includes a map from owners to row_indices.
+    opt_memory : bool, optional (default: True)
+        Enable memory optimization during parallel composition. See
+        :func:`qif_micro.qif.compose.parallel` for details.
 
-    return_labels : bool, optional (default: ``False``)
-        If true, the result includes a map from hint labels to column indices.
+    return_owners : bool, optional (default: False)
+        If True, return a map from owners to row indices in the channel.
+
+    return_labels : bool, optional (default: False)
+        If True, return a map from hint labels to column indices.
 
     Returns
     -------
     Joint
-        The adversary’s revised joint knowledge after observing the dataset.
+        The adversary's joint knowledge after observing the dataset hints.
+        Represents P(record, hint) from the adversary's perspective.
 
-    tuple (Joint, MapOwners | MapLabels)
-        - The adversary’s revised joint knowledge after observing the dataset;
-        - If ``map_owners`` enabled: map from owners to row indices OR
-          If ``map_labels`` enabled: map from hint labels to indices.
+    tuple[Joint, DataFrame]
+        If ``return_owners=True`` or ``return_labels=True`` (but not both):
+        - Joint knowledge
+        - Either the owner-to-row map or hint-to-column map
 
-    tuple (Joint, MapOwners, MapLabels)
-        - The adversary’s revised joint knowledge after observing the dataset;
-        - Map from owners to row indices;
-        - Map from hint labels to indices.
+    tuple[Joint, DataFrame, DataFrame]
+        If both ``return_owners=True`` and ``return_labels=True``:
+        - Joint knowledge
+        - Owner-to-row map
+        - Hint-to-column map
 
     Pre-conditions
     --------------
-    - Each dataset must be in "wide" format: each row is one entry of a record,
-      each column is a record attribute.
-    - Must have a column identifying record owners (default: ``"owner_id"``).
-    - Must have a column identifying entries within records (default: ``"entry_id"``).
-    - If multiple datasets: they must contain the same set of owners.
-    - The ``hint`` column(s) must exist and be populated.
+    - Each dataset must be in wide format: one row per entry, one column per
+      attribute, with owner and entry identifier columns.
+
+    - Owner column (default "owner_id") must exist and uniquely identify
+      owners together with entry columns.
+
+    - Entry column (default "entry_id") must exist and identify entries
+      within records.
+
+    - All hint columns must exist and be populated with valid values.
+
+    - If multiple datasets: must contain identical sets of owners.
+
+    - At least one dataset must be provided.
 
     Examples
     --------
@@ -197,7 +220,6 @@ def build(
         owner_col=owner_col,
         entry_col=entry_col,
         n_partitions=n_partitions,
-        opt_memory=opt_memory,
         return_owners=return_owners,
         return_labels=return_labels
     )
@@ -210,7 +232,7 @@ def build(
          datasets[0]
          .select(owners_expr)
          .collect(engine="streaming")
-         .to_series()
+         .to_series() # ty:ignore[unresolved-attribute] we dont have InProcessQuery
      )
 
     for i, dataset in enumerate(datasets):
@@ -224,7 +246,7 @@ def build(
             dataset
             .select(owners_expr)
             .collect(engine="streaming")
-            .to_series()
+            .to_series() # ty:ignore[unresolved-attribute] we dont have InProcessQuery
         )
 
         if owners_i != owners:
@@ -316,9 +338,10 @@ def build(
             schema = {"hint_label": pl.Struct, "hint": pl.UInt64}
             return result, pl.DataFrame(schema=schema)
 
-        ch, cols = result
         
-        with_suffix = lambda lf, col, s: lf.rename({col: f"{col}_{s}"})
+        ch, cols = result  # ty:ignore[not-iterable] return_labels=True
+        
+        def with_suffix(lf, col, s): return lf.rename({col: f"{col}_{s}"})
         labels_lhs = with_suffix(labels_lhs, "hint_label", i)
         labels_rhs = with_suffix(labels_rhs, "hint_label", j)
 
@@ -356,13 +379,12 @@ def build(
 
 
 @multimethod
-def build(
+def build(  # noqa: F811
     dataset: DataFrame,
     hint: Iterable[str],
     owner_col: str = "owner_id",
     entry_col: str = "entry_id",
     n_partitions: int = 1,
-    opt_memory: bool = True,
     return_owners: bool = False,
     return_labels: bool = False
 ) -> BaselineModel:
@@ -386,8 +408,8 @@ def build(
     # End pre-conditions
     # =============================================================
 
-    records = _mk_records(dataset, owner_col, entry_col)
-    long_dataset = _mk_long_dataset([records], owner_col)
+    records = _mk_records(dataset, owner_col, entry_col).lazy()
+    long_dataset = _mk_long_dataset([records], owner_col).lazy()
     pi = _mk_long_prior(long_dataset.drop(owner_col))
 
     len_expr = pl.len().alias("len")
@@ -417,7 +439,7 @@ def build(
         .collect(engine="streaming")
     )
 
-    n_rows = ch_metadata.select("record").max().item() + 1
+    n_rows = ch_metadata.select("record").max().item() + 1 # ty:ignore[unresolved-attribute] we dont have InProcessQuery
     def _mk_ch_dist(ch_dist_df):
         # Make hint column compact again (as this is now a partition):
         hint_expr = pl.col("hint_label").rank("dense").alias("hint") - 1
@@ -434,11 +456,11 @@ def build(
         return ch_dist.tocsr()
 
 
-    n_cols = ch_metadata.select("hint").max().item() + 1
+    n_cols = ch_metadata.select("hint").max().item() + 1 # ty:ignore[unresolved-attribute] we dont have InProcessQuery
     n_partitions = max(0, min(n_partitions, n_cols))
     part_expr = (pl.col("hint") % n_partitions).alias("part")
 
-    partitions = ch_metadata.with_columns(part_expr).partition_by("part")
+    partitions = ch_metadata.with_columns(part_expr).partition_by("part") # ty:ignore[unresolved-attribute] we dont have InProcessQuery
 
     ch_dist = [_mk_ch_dist(part_metadata) for part_metadata in partitions]
     ch_dist = ch_dist if len(ch_dist) > 1 else ch_dist[0]
@@ -446,7 +468,7 @@ def build(
     ch = Channel(ch_dist)
     
     joint = qif.joint(pi, ch)
-    map_labels = ch_metadata.lazy().select("hint_label", "hint").unique()
+    map_labels = ch_metadata.lazy().select("hint_label", "hint").unique() # ty:ignore[unresolved-attribute] we dont have InProcessQuery
     map_owners = long_dataset.lazy() # Map owners is just our long_dataset
 
     if return_owners and return_labels: return joint, map_owners, map_labels

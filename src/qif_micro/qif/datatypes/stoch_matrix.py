@@ -2,10 +2,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 import numpy as np
-import scipy.sparse as sp
 
-from qif_micro.qif.datatypes.typing import Slice
-from qif_micro.qif.datatypes._validation import _is_dist_valid, _Error
+from qif_micro.qif.datatypes._validation import _Error, _is_dist_valid
+from qif_micro.qif.datatypes.typing import Slice, is_partitioned
 
 
 @dataclass(frozen=True)
@@ -81,18 +80,18 @@ class StochMatrix:
         if self.dist_orient not in (0, 1):
             raise ValueError("``dist_orient`` must be 0 or 1!")
 
-        is_partitioned = isinstance(self.dist, Sequence)
-        dist_list = self.dist if is_partitioned else [self.dist]
+        dist = self.dist if is_partitioned(self.dist) else [self.dist]
 
         # Check all slices are 2D
-        n_rows = dist_list[0].shape[0]
+        n_rows = dist[0].shape[0]
         msg_dim = "``dist`` must be 2-dimensional!"
         msg_rows = "All partitions must have the same number of rows!"
-        for s in dist_list:
-            if s.ndim != 2: raise ValueError(msg_dim)
-            if s.shape[0] != n_rows: raise ValueError(ms_rows)
 
-        dist_check = _is_dist_valid(dist_list, dist_orient=self.dist_orient)
+        for s in dist:
+            if s.ndim != 2: raise ValueError(msg_dim)
+            if s.shape[0] != n_rows: raise ValueError(msg_rows)
+
+        dist_check = _is_dist_valid(dist, dist_orient=self.dist_orient)
 
         if dist_check.error is _Error.NEGATIVE_VALUES:
             raise ValueError("Negative entries!")
@@ -103,5 +102,7 @@ class StochMatrix:
         # ====================================================================
 
         axis_sum = dist_check.axis_sum
+        assert axis_sum is not None
+        
         is_complete = np.isclose(axis_sum, 1.0).all()
         object.__setattr__(self, "is_complete", bool(is_complete))
