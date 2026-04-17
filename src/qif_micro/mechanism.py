@@ -245,62 +245,68 @@ def record(
             output_domain=attr_output_domain.to_series().to_list(),  # ty:ignore[unresolved-attribute]
         )
 
-        map_row_labels = attr_input_domain.lazy().with_row_index("row")  # ty:ignore[unresolved-attribute]
-        map_col_labels = attr_output_domain.lazy().with_row_index("col")  # ty:ignore[unresolved-attribute]
+        map_row_labels = attr_input_domain.with_row_index("row")  # ty:ignore[unresolved-attribute]
+        map_col_labels = attr_output_domain.with_row_index("col")  # ty:ignore[unresolved-attribute]
 
         dist = sp.coo_array(ch.dist)
         data, rows, cols = dist.data, *dist.coords
         
         mechanism_df = (
-            pl.LazyFrame({"row": rows, "col": cols, "p": data})
+            pl.DataFrame({"row": rows, "col": cols, "p": data})
             .join(map_row_labels, on="row").drop("row")
             .join(map_col_labels, on="col").drop("col")
+            .with_columns(pl.concat_list("row_label"))
+            .with_columns(pl.concat_list("col_label"))
+            .lazy()
         )
         
         len_expr = pl.col(attr).list.len().alias("len")
-        entry_expr = pl.row_index(entry_col).over(record_col)
+        # entry_expr = pl.row_index(entry_col).over(record_col)
         
         input_entries = (
-            input_domain
-            .with_columns(len_expr)
-            .rename({attr: "row_label"})
-            .explode("row_label")
-            .with_columns(entry_expr)
+            input_domain.with_columns(len_expr).rename({attr: "row_label"})
             .collect(engine="streaming")
             .partition_by("len", as_dict=True)  # ty:ignore[unresolved-attribute]
         )
 
         output_entries = (
-            output_domain
-            .with_columns(len_expr)
-            .rename({attr: "col_label"})
-            .explode("col_label")
-            .with_columns(entry_expr)
+            output_domain.with_columns(len_expr).rename({attr: "col_label"})
             .collect(engine="streaming")
             .partition_by("len", as_dict=True)  # ty:ignore[unresolved-attribute]
         )
 
-        join_cols = list(preserve_attrs | {"col_label", entry_col})
+        def _mk_concat_expr(col):
+            return pl.concat_list(col, f"{col}_right").alias(col)
+
+        row_expr = _mk_concat_expr("row_label")
+        col_expr = _mk_concat_expr("col_label")
+        p_expr = pl.col("p").mul("p_right").alias("p")
+
+        min_n_entries = min(key[0] for key in input_entries.keys())
+        max_n_entries = max(key[0] for key in input_entries.keys())
+        mechanism_per_length = [mechanism_df]
+
+        for _ in range(2, max_n_entries + 1): mechanism_per_length.append(
+            mechanism_per_length[-1]
+            .join(mechanism_df, how="cross")
+            .select(row_expr, col_expr, p_expr)
+        )
+
+        join_cols = [*preserve_attrs, "col_label", entry_col]
         ch_metadata = []
-        
-        for n_entries in input_entries.keys():
-            input_part = input_entries[n_entries].drop("len").lazy()
-            output_part = output_entries[n_entries].drop("len").lazy()
+
+        for n_entries in range(min_n_entries, max_n_entries + 1):
+            input_part = input_entries[(n_entries,)].drop("len").lazy()
+            output_part = output_entries[(n_entries,)].drop("len").lazy()
 
             metadata_l = (
                 # We first join with the mechanism to get the possible
                 # sanitised values, and join with the output_part to
                 # get records that are candidate to be compatible.
-                input_part
-                .join(mechanism_df, on="row_label").drop("row_label")
+                mechanism_per_length[n_entries - 1]
+                .join(input_part, on="row_label").drop("row_label")
                 .join(output_part, on=join_cols)
-
-                # For records with length > 1, it may be that we get
-                # a few entries compatible, but not all of them.
-                # In this case we must discard such records.
-                .group_by(record_col, f"{record_col}_right")
-                .agg(pl.len(), pl.col("p").product())
-                .filter(pl.col("len") == n_entries[0])
+                .select(record_col, f"{record_col}_right", "p")
             )
 
             ch_metadata.append(metadata_l)
@@ -317,8 +323,6 @@ def record(
 
     # Then we combine each individual channel, element-wise:
     ch_dist = _build_for(transform_attrs[0])
-
-    for attr in transform_attrs[1:]:
-        ch_dist *= _build_for(attr)
+    for attr in transform_attrs[1:]: ch_dist *= _build_for(attr)
 
     return Channel(ch_dist)
