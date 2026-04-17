@@ -6,7 +6,7 @@ import scipy.sparse as sp
 
 from qif_micro import qif
 from qif_micro.qif.datatypes import Channel
-from qif_micro.typing import DataFrame, is_dataframe, Record
+from qif_micro.typing import DataFrame, Record, is_dataframe
 
 
 @runtime_checkable
@@ -260,17 +260,20 @@ def record(
             .lazy()
         )
         
+        row_expr = pl.col(attr).alias("row_label")
+        col_expr = pl.col(attr).alias("col_label")
         len_expr = pl.col(attr).list.len().alias("len")
-        # entry_expr = pl.row_index(entry_col).over(record_col)
-        
+
         input_entries = (
-            input_domain.with_columns(len_expr).rename({attr: "row_label"})
+            input_domain
+            .select(*preserve_attrs, record_col, len_expr, row_expr)
             .collect(engine="streaming")
             .partition_by("len", as_dict=True)  # ty:ignore[unresolved-attribute]
         )
 
         output_entries = (
-            output_domain.with_columns(len_expr).rename({attr: "col_label"})
+            output_domain
+            .select(*preserve_attrs, record_col, len_expr, col_expr)
             .collect(engine="streaming")
             .partition_by("len", as_dict=True)  # ty:ignore[unresolved-attribute]
         )
@@ -292,7 +295,7 @@ def record(
             .select(row_expr, col_expr, p_expr)
         )
 
-        join_cols = [*preserve_attrs, "col_label", entry_col]
+        join_cols = [*preserve_attrs, "col_label"]
         ch_metadata = []
 
         for n_entries in range(min_n_entries, max_n_entries + 1):
