@@ -27,8 +27,12 @@
 !src/qif_micro/qif/measure/
 !src/qif_micro/qif/measure/*.py
 
-Unit and integration tests
-!tests/
+# Unit and integration tests
 !tests/
 !tests/**/
 !tests/**/*.py
+
+# Benchmarks
+!benchmark/
+!benchmark/**/
+!benchmark/**/*.py
