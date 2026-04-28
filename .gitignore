@@ -36,3 +36,4 @@
 !benchmark/
 !benchmark/**/
 !benchmark/**/*.py
+!benchmark/**/*.yaml

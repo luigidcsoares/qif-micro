@@ -9,7 +9,7 @@ authors = [
 requires-python = ">=3.13"
 dependencies = [
     "multimethod>=2.0.2",
-    "polars>=1.32.3",
+    "polars-lts-cpu>=1.32.3",
     "scipy>=1.16.3",
 ]
 
@@ -19,6 +19,7 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
+    "altair>=6.1.0",
     "catppuccin-jupyterlab>=0.2.4",
     "jedi-language-server>=0.46.0",
     "jupyter>=1.1.1",
@@ -26,7 +27,9 @@ dev = [
     "pytest>=8.4.1",
     "python-lsp-server>=1.14.0",
     "ruff>=0.15.10",
+    "tqdm>=4.67.3",
     "ty>=0.0.29",
+    "vl-convert-python>=1.9.0.post1",
     "vulture>=2.16",
 ]
 

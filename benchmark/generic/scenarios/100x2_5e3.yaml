@@ -1,0 +1,21 @@
+- name: cat_100x2_5e3
+  config:
+    n_entries: 5000
+    n_cat: 2
+    n_num: 100
+    sanitise_cat: true
+    sanitise_num: false
+- name: num_100x2_5e3
+  config:
+    n_entries: 5000
+    n_cat: 2
+    n_num: 100
+    sanitise_cat: false
+    sanitise_num: true
+- name: both_100x2_5e3
+  config:
+    n_entries: 5000
+    n_cat: 2
+    n_num: 100
+    sanitise_cat: true
+    sanitise_num: true

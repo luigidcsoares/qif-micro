@@ -1,0 +1,21 @@
+- name: cat_200x4_5e4
+  config:
+    n_entries: 50000
+    n_cat: 4
+    n_num: 200
+    sanitise_cat: true
+    sanitise_num: false
+- name: num_200x4_5e4
+  config:
+    n_entries: 50000
+    n_cat: 4
+    n_num: 200
+    sanitise_cat: false
+    sanitise_num: true
+- name: both_200x4_5e4
+  config:
+    n_entries: 50000
+    n_cat: 4
+    n_num: 200
+    sanitise_cat: true
+    sanitise_num: true

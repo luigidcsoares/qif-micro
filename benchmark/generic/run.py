@@ -7,10 +7,13 @@ Runs generic benchmarks with configurable parameters. Supports:
 - Multiple files/directories: --scenarios file1.yaml dir1/ file2.yaml
 """
 import argparse
-import sys
+from pathlib import Path
+
+import polars as pl
 
 from benchmark.generic import benchmark
 from benchmark.generic.config import ExperimentConfig, load_multiple_scenarios
+from benchmark.utils import plotting
 
 
 def _parse_args() -> argparse.Namespace:
@@ -56,7 +59,14 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--iterations",
         type=int,
-        help="Number of iterations"
+        help="Number of iterations (default: 3)"
+    )
+
+    parser.add_argument(
+        "--experiments",
+        type=int,
+        default=5,
+        help="Number of distinct experiments (default: 5)"
     )
 
     parser.add_argument(
@@ -69,7 +79,7 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> int:
+def main():
     """
     Run generic benchmarks.
 
@@ -77,6 +87,8 @@ def main() -> int:
     1. YAML scenarios: --scenarios scenarios/small.yaml
     2. CLI arguments: partial args allowed, missing use defaults
     3. Defaults: runs with built-in defaults
+
+    The --iterations flag is separate and applies to all configs (default: 3).
 
     Returns
     -------
@@ -90,12 +102,11 @@ def main() -> int:
     # Load from YAML scenarios if provided
     if args.scenarios:
         configs = load_multiple_scenarios(args.scenarios)
-        total_sources = len(args.scenarios)
-        sources_str = " ".join(args.scenarios)
-        print(f"Loaded {len(configs)} scenarios from "
-              f"{total_sources} source(s): {sources_str}")
+        print(f"Loaded {len(configs)} scenarios from")
 
     # Create config from CLI arguments
+    # Pre-condition: these arguments must not have a default value
+    # defined via argparse, otherwise they will always be set.
     cli_cfg_dict = {}
     if args.n_entries: cli_cfg_dict["n_entries"] = args.n_entries
     if args.n_cat: cli_cfg_dict["n_cat"] = args.n_cat
@@ -117,6 +128,20 @@ def main() -> int:
     # Run benchmarks
     print(f"Running {len(configs)} benchmark(s)...\n")
 
+    plotdata_time = {
+        "cat": pl.DataFrame(),
+        "num": pl.DataFrame(),
+        "both": pl.DataFrame(),
+        "none": pl.DataFrame()
+    }
+
+    plotdata_peak = {
+        "cat": pl.DataFrame(),
+        "num": pl.DataFrame(),
+        "both": pl.DataFrame(),
+        "none": pl.DataFrame()
+    }
+
     for name, cfg in configs:
         print(f"[{name}] Starting experiment...")
         print(f"  n_entries={cfg.n_entries}, n_cat={cfg.n_cat}, "
@@ -125,18 +150,65 @@ def main() -> int:
               f"sanitise_num={cfg.sanitise_num}, "
               f"iterations={cfg.iterations}")
 
-        time_df, memory_df = benchmark.run(**cfg.to_dict())
+        result_time, result_peak = benchmark.run_many(cfg, args.experiments)
+        output_dir = Path(args.output_dir) / name
 
-        # save_results_with_config(
-        #     cfg, (time_df, memory_df),
-        #     args.output_dir, name=name
-        # )
+        cfg_df = pl.DataFrame(cfg.to_dict())
 
-        print(f"  ✓ Completed. Results saved to {args.output_dir}/\n")
+        cfg_df.write_parquet(output_dir / "cfg.parquet", mkdir=True)
+        result_time.write_parquet(output_dir / "time.parquet", mkdir=True)
+        result_peak.write_parquet(output_dir / "peak.parquet", mkdir=True)
+
+        if args.sanitise_cat and args.sanitise_num: kind = "both"
+        elif args.sanitise_cat: kind = "cat"
+        elif args.sanitise_num: kind = "num"
+        else: kind = "both"
+
+        plotdata_time[kind] = pl.concat([plotdata_time[kind], result_time])
+        plotdata_peak[kind] = pl.concat([plotdata_peak[kind], result_peak])
+
+        print(f"  ✓ Completed. Results saved to {output_dir}\n")
 
     print("All benchmarks completed successfully")
-    return 0
 
+    for kind, data in plotdata_time.items():
+        if data.height == 0: continue
+    
+        data = data.explode("time")
+        xvalues = data["length"].unique().sort().to_list()
+        ymax = data["time"].max()
 
+        for step in ["mechanism", "model", "risk", "all"]:
+            plot_data = data.filter(pl.col("step") == step)
+
+            chart = plotting.running_time(
+                plot_data,
+                xvalues,
+                ymax,  # ty:ignore[invalid-argument-type]
+                log_scale=True
+            )  
+
+            path = Path(args.output_dir) / f"time_{kind}_{step}.svg"
+            chart.save(path)
+            print(f"Plot on execution time saved to {path}")
+
+    for kind, plot_data in plotdata_peak.items():
+        if plot_data.height == 0: continue
+    
+        xvalues = plot_data["length"].unique().sort().to_list()
+        ymax = plot_data["peak"].max()
+
+        chart = plotting.peak_memory(
+            plot_data,
+            xvalues,
+            ymax,  # ty:ignore[invalid-argument-type]
+            log_scale=True
+        )  
+
+        path = Path(args.output_dir) / f"peak_{kind}.svg"
+        chart.save(path)
+        print(f"Plot on memory usage saved to {path}")
+
+            
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

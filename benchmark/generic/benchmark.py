@@ -6,10 +6,11 @@ generic model and mechanism benchmarks.
 from functools import partial
 from multiprocessing import get_context
 
-import numpy as np
 import polars as pl
 from loky import ProcessPoolExecutor
+from tqdm import tqdm
 
+from benchmark.generic.config import ExperimentConfig
 from benchmark.generic.experiment import Experiment
 from benchmark.utils import memory, timing
 from qif_micro import measure, mechanism, model, qif
@@ -81,26 +82,44 @@ def _benchmark_experiment(
         return pool.submit(_wrap).result()
 
 
-def run(
-    n_entries: int,
-    n_cat: int,
-    n_num: int,
-    sanitise_cat: bool = False,
-    sanitise_num: bool = False,    
-    iterations: int = 1
-) -> tuple[pl.DataFrame, pl.DataFrame]:
+def _run(cfg: ExperimentConfig) -> tuple[pl.DataFrame, pl.DataFrame]:
     rr = partial(qif.dp.random_response, eps=1)
     tg = partial(qif.dp.geometric, eps=1)
 
     mechanisms = {}
 
-    if sanitise_cat:
-        m_cat = partial(rr, eps=1, domain_size=n_cat)
+    if cfg.sanitise_cat:
+        m_cat = partial(rr, eps=1, domain_size=cfg.n_cat)
         mechanisms |= {"cat": m_cat}
 
-    if sanitise_num:
-        m_num = partial(tg, eps=1, domain_min=0, domain_max=n_num)
+    if cfg.sanitise_num:
+        m_num = partial(tg, eps=1, domain_min=0, domain_max=cfg.n_num)
         mechanisms |= {"num": m_num}
 
-    e = Experiment(n_entries, n_cat, n_num, **mechanisms)
-    return _benchmark_experiment(e, iterations=iterations)
+    e = Experiment(cfg.n_entries, cfg.n_cat, cfg.n_num, **mechanisms)
+    return _benchmark_experiment(e, iterations=cfg.iterations)
+
+
+def run_many(
+    cfg: ExperimentConfig,
+    experiments: int
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    ctx = get_context("spawn")
+
+    result_time = pl.DataFrame()
+    result_peak = pl.DataFrame()
+
+    length_expr = pl.lit(cfg.n_entries).alias("length")
+    domain_cat_expr = pl.lit(cfg.n_cat).alias("n_cat")
+    domain_num_expr = pl.lit(cfg.n_num).alias("n_num")
+
+    for _ in tqdm(range(experiments), leave=False):
+        with ProcessPoolExecutor(max_workers=1, context=ctx) as pool:
+            rt, rp = pool.submit(_run, cfg).result()
+            rt = rt.with_columns(length_expr, domain_cat_expr, domain_num_expr)
+            rp = rp.with_columns(length_expr, domain_cat_expr, domain_num_expr)
+
+        result_time = pl.concat([result_time, rt])
+        result_peak = pl.concat([result_peak, rp])
+
+    return result_time, result_peak

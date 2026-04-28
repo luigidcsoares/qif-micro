@@ -1,0 +1,21 @@
+- name: cat_400x8_5e7
+  config:
+    n_entries: 50000000
+    n_cat: 8
+    n_num: 400
+    sanitise_cat: true
+    sanitise_num: false
+- name: num_400x8_5e7
+  config:
+    n_entries: 50000000
+    n_cat: 8
+    n_num: 400
+    sanitise_cat: false
+    sanitise_num: true
+- name: both_400x8_5e7
+  config:
+    n_entries: 50000000
+    n_cat: 8
+    n_num: 400
+    sanitise_cat: true
+    sanitise_num: true

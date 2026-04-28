@@ -1,0 +1,21 @@
+- name: cat_1600x32_5e3
+  config:
+    n_entries: 5000
+    n_cat: 32
+    n_num: 1600
+    sanitise_cat: true
+    sanitise_num: false
+- name: num_1600x32_5e3
+  config:
+    n_entries: 5000
+    n_cat: 32
+    n_num: 1600
+    sanitise_cat: false
+    sanitise_num: true
+- name: both_1600x32_5e3
+  config:
+    n_entries: 5000
+    n_cat: 32
+    n_num: 1600
+    sanitise_cat: true
+    sanitise_num: true

@@ -1,0 +1,21 @@
+- name: cat_800x16_5e6
+  config:
+    n_entries: 5000000
+    n_cat: 16
+    n_num: 800
+    sanitise_cat: true
+    sanitise_num: false
+- name: num_800x16_5e6
+  config:
+    n_entries: 5000000
+    n_cat: 16
+    n_num: 800
+    sanitise_cat: false
+    sanitise_num: true
+- name: both_800x16_5e6
+  config:
+    n_entries: 5000000
+    n_cat: 16
+    n_num: 800
+    sanitise_cat: true
+    sanitise_num: true

@@ -19,30 +19,35 @@ class ExperimentConfig:
     ----------
     n_entries : int, optional
         Number of entries in the dataset (default: 100).
+
     n_cat : int, optional
-        Domain size for the 'cat' attribute (default: 10).
+        Domain size for the ``cat`` attribute (default: 10).
+
     n_num : int, optional
-        Domain size for the 'num' attribute (default: 10).
+        Domain size for the ``num`` attribute (default: 10).
+
     sanitise_cat : bool, optional
-        Whether 'cat' attribute is sanitized (default: True).
+        Whether ``cat`` attribute is sanitized (default: True).
+
     sanitise_num : bool, optional
-        Whether 'num' attribute is sanitized (default: True).
+        Whether ``num`` attribute is sanitized (default: True).
+
     iterations : int, optional
-        Number of iterations to repeat (default: 1).
+        Number of iterations to repeat (default: 3).
     """
     n_entries: int = 100
     n_cat: int = 10
     n_num: int = 10
     sanitise_cat: bool = True
     sanitise_num: bool = True
-    iterations: int = 1
-
+    iterations: int = 3
+    
     def to_dict(self) -> dict[str, Any]:
         """Convert config to dictionary."""
         return dataclasses.asdict(self)
 
     @staticmethod
-    def from_dict(data: dict[str, Any]) -> 'ExperimentConfig':
+    def from_dict(data: dict[str, Any]) -> "ExperimentConfig":
         """Create config from dictionary."""
         return ExperimentConfig(**data)
 
@@ -67,6 +72,7 @@ def load_scenarios_from_yaml(
     ------
     FileNotFoundError
         If the YAML file does not exist.
+
     yaml.YAMLError
         If the file is not valid YAML.
     """
@@ -84,54 +90,18 @@ def load_scenarios_from_yaml(
     for item in data:
         if not isinstance(item, dict):
             raise ValueError("Each scenario must be a dict")
-        if 'name' not in item:
+
+        if "name" not in item:
             raise ValueError("Each scenario must have a 'name'")
-        if 'config' not in item:
+
+        if "config" not in item:
             raise ValueError("Each scenario must have a 'config'")
 
-        name = item['name']
-        cfg = ExperimentConfig.from_dict(item['config'])
+        name = item["name"]
+        cfg = ExperimentConfig.from_dict(item["config"])
         scenarios.append((name, cfg))
 
     return scenarios
-
-
-def save_results_with_config(
-    cfg: ExperimentConfig,
-    results: tuple,
-    output_dir: str | Path,
-    name: str = "experiment"
-) -> None:
-    """
-    Save benchmark results alongside the configuration that produced them.
-
-    Parameters
-    ----------
-    cfg : ExperimentConfig
-        The configuration used to generate results.
-    results : tuple
-        Results from benchmark.run() - (time_df, memory_df).
-    output_dir : str | Path
-        Directory to save results and config.
-    name : str, optional
-        Base name for output files (default: "experiment").
-    """
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Save config as YAML
-    config_file = output_dir / f"{name}_config.yaml"
-    with open(config_file, 'w') as f:
-        yaml.dump([{
-            'name': name,
-            'config': cfg.to_dict()
-        }], f, default_flow_style=False)
-
-    # Save results (assuming DataFrames)
-    time_df, memory_df = results
-    time_file = output_dir / f"{name}_time.csv"
-    memory_file = output_dir / f"{name}_memory.csv"
-
 
 
 def discover_yaml_files(directory: str | Path) -> list[Path]:
@@ -192,7 +162,7 @@ def load_multiple_scenarios(
     for source in sources:
         source_path = Path(source)
 
-        if source_path.is_file() and source_path.suffix == '.yaml':
+        if source_path.is_file() and source_path.suffix == ".yaml":
             # Load from single YAML file
             scenarios = load_scenarios_from_yaml(source_path)
             all_scenarios.extend(scenarios)
@@ -204,11 +174,10 @@ def load_multiple_scenarios(
                 scenarios = load_scenarios_from_yaml(yaml_file)
                 all_scenarios.extend(scenarios)
 
-        else:
-            raise ValueError(
-                f"Invalid scenario path (not a .yaml file or directory): "
-                f"{source}"
-            )
+        else: raise ValueError(
+            f"Invalid scenario path (not a .yaml file or directory): "
+            f"{source}"
+        )
 
     if not all_scenarios:
         raise ValueError("No scenarios loaded from any source")
