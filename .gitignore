@@ -32,8 +32,10 @@
 !tests/**/
 !tests/**/*.py
 
-# Benchmarks
-!benchmark/
-!benchmark/**/
-!benchmark/**/*.py
-!benchmark/**/*.yaml
+# Experiments
+!experiments/
+!experiments/*.ipynb
+!experiments/benchmark/
+!experiments/benchmark/**/
+!experiments/benchmark/**/*.py
+!experiments/benchmark/**/*.yaml
