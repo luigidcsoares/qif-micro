@@ -1,0 +1,5 @@
+- name: count-sum_800x16_5e7
+  config:
+    n_entries: 50000000
+    n_cat: 16
+    n_num: 800

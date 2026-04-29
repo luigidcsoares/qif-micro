@@ -1,10 +1,9 @@
 """Entry point for generic benchmarks
 
 Runs generic benchmarks with configurable parameters. Supports:
-- Programmatic usage: pass ExperimentConfig directly
-- YAML scenarios: --scenarios <file.yaml> or <directory>
+- YAML scenarios: --load-from <dir> --scenarios file1.yaml file2.yaml
+- All scenarios from directory: --load-from <dir>
 - CLI arguments: --n-entries 1000 --iterations 5
-- Multiple files/directories: --scenarios file1.yaml dir1/ file2.yaml
 """
 import argparse
 from pathlib import Path
@@ -13,17 +12,24 @@ import polars as pl
 
 from benchmark.generic import benchmark
 from benchmark.generic.config import ExperimentConfig, load_multiple_scenarios
-from benchmark.utils import plotting
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run generic benchmarks")
 
     parser.add_argument(
+        "--load-from",
+        type=str,
+        default=None,
+        help="Directory containing scenario files (default: None)"
+    )
+
+    parser.add_argument(
         "--scenarios",
-        nargs="+",
-        help=("Path(s) to YAML scenario file(s) or directory with YAML files."
-              " Can specify multiple files/directories in one command.")
+        nargs="*",
+        default=[],
+        help=("Scenario file names to load from --load-from. "
+              "If not specified, load all .yaml files from --load-from.")
     )
 
     parser.add_argument(
@@ -84,9 +90,10 @@ def main():
     Run generic benchmarks.
 
     Supports multiple invocation modes:
-    1. YAML scenarios: --scenarios scenarios/small.yaml
-    2. CLI arguments: partial args allowed, missing use defaults
-    3. Defaults: runs with built-in defaults
+    1. YAML scenarios: --load-from <dir> --scenarios file1.yaml file2.yaml
+    2. All scenarios from directory: --load-from <dir>
+    3. CLI arguments: partial args allowed, missing use defaults
+    4. Defaults: runs with built-in defaults
 
     The --iterations flag is separate and applies to all configs (default: 3).
 
@@ -99,10 +106,16 @@ def main():
 
     configs = []
 
-    # Load from YAML scenarios if provided
-    if args.scenarios:
-        configs = load_multiple_scenarios(args.scenarios)
-        print(f"Loaded {len(configs)} scenarios from")
+    # Load from YAML scenarios if --load-from is provided
+    if args.load_from:
+        load_from_path = Path(args.load_from)
+        scenario_paths = [load_from_path / f for f in args.scenarios]
+
+        # If no scenario was selected, load all .yaml files from directory
+        if len(scenario_paths) == 0: scenario_paths = [load_from_path]
+        
+        configs = load_multiple_scenarios(scenario_paths)  # ty:ignore[invalid-argument-type]
+        print(f"Loaded {len(configs)} scenarios from {args.load_from}")
 
     # Create config from CLI arguments
     # Pre-condition: these arguments must not have a default value
@@ -128,20 +141,6 @@ def main():
     # Run benchmarks
     print(f"Running {len(configs)} benchmark(s)...\n")
 
-    plotdata_time = {
-        "cat": pl.DataFrame(),
-        "num": pl.DataFrame(),
-        "both": pl.DataFrame(),
-        "none": pl.DataFrame()
-    }
-
-    plotdata_peak = {
-        "cat": pl.DataFrame(),
-        "num": pl.DataFrame(),
-        "both": pl.DataFrame(),
-        "none": pl.DataFrame()
-    }
-
     for name, cfg in configs:
         print(f"[{name}] Starting experiment...")
         print(f"  n_entries={cfg.n_entries}, n_cat={cfg.n_cat}, "
@@ -159,56 +158,10 @@ def main():
         result_time.write_parquet(output_dir / "time.parquet", mkdir=True)
         result_peak.write_parquet(output_dir / "peak.parquet", mkdir=True)
 
-        if args.sanitise_cat and args.sanitise_num: kind = "both"
-        elif args.sanitise_cat: kind = "cat"
-        elif args.sanitise_num: kind = "num"
-        else: kind = "both"
-
-        plotdata_time[kind] = pl.concat([plotdata_time[kind], result_time])
-        plotdata_peak[kind] = pl.concat([plotdata_peak[kind], result_peak])
-
         print(f"  ✓ Completed. Results saved to {output_dir}\n")
 
     print("All benchmarks completed successfully")
 
-    for kind, data in plotdata_time.items():
-        if data.height == 0: continue
-    
-        data = data.explode("time")
-        xvalues = data["length"].unique().sort().to_list()
-        ymax = data["time"].max()
 
-        for step in ["mechanism", "model", "risk", "all"]:
-            plot_data = data.filter(pl.col("step") == step)
-
-            chart = plotting.running_time(
-                plot_data,
-                xvalues,
-                ymax,  # ty:ignore[invalid-argument-type]
-                log_scale=True
-            )  
-
-            path = Path(args.output_dir) / f"time_{kind}_{step}.svg"
-            chart.save(path)
-            print(f"Plot on execution time saved to {path}")
-
-    for kind, plot_data in plotdata_peak.items():
-        if plot_data.height == 0: continue
-    
-        xvalues = plot_data["length"].unique().sort().to_list()
-        ymax = plot_data["peak"].max()
-
-        chart = plotting.peak_memory(
-            plot_data,
-            xvalues,
-            ymax,  # ty:ignore[invalid-argument-type]
-            log_scale=True
-        )  
-
-        path = Path(args.output_dir) / f"peak_{kind}.svg"
-        chart.save(path)
-        print(f"Plot on memory usage saved to {path}")
-
-            
 if __name__ == "__main__":
     main()

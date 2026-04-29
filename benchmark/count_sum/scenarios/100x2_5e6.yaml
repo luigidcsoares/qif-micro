@@ -1,0 +1,5 @@
+- name: count-sum_100x2_5e6
+  config:
+    n_entries: 5000000
+    n_cat: 2
+    n_num: 100
