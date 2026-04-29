@@ -9,8 +9,9 @@
 !pyproject.toml
 !uv.lock
 
-# Examples
+# Examples and documentation
 !tutorial.ipynb
+!README.md
 
 # Library implementation
 !src/
@@ -35,6 +36,7 @@
 # Experiments
 !experiments/
 !experiments/*.ipynb
+!experiments/README.md
 !experiments/benchmark/
 !experiments/benchmark/**/
 !experiments/benchmark/**/*.py
