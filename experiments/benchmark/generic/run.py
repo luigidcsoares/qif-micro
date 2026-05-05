@@ -78,8 +78,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         type=str,
-        default="benchmark/results",
-        help="Directory to save results (default: benchmark/results)"
+        default="experiments/benchmark/results",
+        help="Directory to save results (default: experiments/benchmark/results)"
     )
 
     return parser.parse_args()
