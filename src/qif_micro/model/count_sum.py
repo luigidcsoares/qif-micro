@@ -154,8 +154,8 @@ def build(
             0.        , 0.0625    , 0.        , 0.0625    , 0.        ]])
 
     >>> adv_st.dist.toarray()
-    array([[0., 0., 1., 0., 0., 0., 0., 0., 0., 1.],
-           [0., 0., 0., 0., 1., 1., 0., 0., 0., 0.],
+    array([[0., 0., 1., 0., 0., 1., 0., 0., 0., 1.],
+           [0., 0., 0., 0., 1., 0., 0., 0., 0., 0.],
            [1., 0., 0., 0., 0., 0., 0., 1., 0., 0.],
            [0., 1., 0., 1., 0., 0., 1., 0., 1., 0.]])
     """
@@ -284,34 +284,6 @@ def build(
     joint_agg_dist = sp.coo_array(coo_repr, shape=shape)
     baseline_joint = Joint(joint_agg_dist.tocsr())
 
-    # Now that we have the baseline joint, we can construct
-    # the adversary's strategy but only for a subset of valid hints.
-    #
-    # We first collect the valid columns (non-zero cells)
-    # for each row (aggregated record) in the baseline.
-    indices = baseline_joint.dist.indices  # ty:ignore[unresolved-attribute]
-    sections = baseline_joint.dist.indptr[1:-1]  # ty:ignore[unresolved-attribute]
-    valid_cols = np.split(indices, sections)
-
-    # Then we construct the metadata for the hint channnel:
-    # for each aggregated record, we need the hint labels.
-    # We standardise the hints as a list (in case this is not longitudinal).
-    labels_schema = map_labels.collect_schema()
-
-    def as_list(c):
-        return c if labels_schema[c] == pl.List else pl.concat_list(c)
-
-    ch_metadata = (
-        pl.LazyFrame({"agg_record": range(n_rows), "hint": valid_cols})
-        .explode("hint")
-        .join(map_labels, on="hint")
-        .with_columns(as_list("hint_label"))
-        # We need ``count_col`` and ``sum_col``, but not per owner,
-        # only per aggregated record, so we filter owners with same record.
-        # Therefore, we drop owners with same record and keep on repr
-        .join(long_agg_dataset.lazy().unique("agg_record"), on="agg_record")
-    )
-
     def _with_count_sum(ch_metadata, i):
         agg_entries = (
             agg_entries_seq[i]
@@ -320,28 +292,24 @@ def build(
             .unnest("record")
         )
 
-        pred_group = pl.lit(True) if group_by_col is None else (
-            pl.col("hint_label").list.get(i).struct.field(group_by_col)
-            == pl.col(group_by_col)
-        )
-
+        cols = _filter_optional([count_col, sum_col, group_by_col])
         agg_expr = (
             pl.coalesce("^agg_entries$", pl.lit([]))
-            .list.concat(pl.struct(count_col, sum_col))
+            .list.concat(pl.struct(cols))
             .alias("agg_entries")
         )
 
         return (
             ch_metadata
             .join(agg_entries, on=owner_col)
-            .filter(pred_group)
-            .select(owner_col, "agg_record", "hint", "hint_label", agg_expr)
+            .select(owner_col, "agg_record", agg_expr)
         )
 
 
     def _compute_next_hint_p(ch_metadata):
         ch_metadata = ch_metadata.with_columns(
-            pl.col("agg_entries").list.first().struct.unnest(),
+            pl.col("agg_entries").list.first().struct.field(count_col),
+            pl.col("agg_entries").list.first().struct.field(sum_col),
             pl.col("agg_entries").list.slice(1),
             pl.col("hint_label").list.first().struct.unnest(),
             pl.col("hint_label").list.slice(1)
@@ -383,7 +351,51 @@ def build(
         return ch_metadata.with_columns(p_expr)
 
 
-    ch_metadata = reduce(_with_count_sum, range(len(datasets)), ch_metadata)
+    def get_agg(i):
+        return pl.col("agg_entries").list.get(i).struct
+
+
+    def get_hint(i):
+        return pl.col("hint_label").list.get(i).struct
+
+
+    def mk_pred_group(i):
+        if group_by_col is None: return pl.lit(True)
+        group_hint_expr = get_hint(i).field(group_by_col)
+        group_agg_expr = get_agg(i).field(group_by_col)
+        return group_hint_expr == group_agg_expr
+
+
+    def mk_pred_agg(i):
+        count_expr = get_agg(i).field(count_col)
+        sum_expr = get_agg(i).field(sum_col)
+        agg_expr = get_hint(i).field(agg_col)
+
+        # If there is only one transaction, we only consider the case of a hint
+        # whose agg value is exactly the sum. Else, we check for <= sum
+        pred_one_entry = ((count_expr == 1) & (agg_expr == sum_expr))
+        pred_entries = ((count_expr > 1) & (agg_expr <= sum_expr))
+
+        return pred_one_entry | pred_entries
+
+
+    pred_hint = [
+        mk_pred_group(i) & mk_pred_agg(i)
+        for i in range(len(datasets))
+    ]
+
+    ch_metadata = reduce(
+        _with_count_sum,
+        range(len(datasets)),
+        long_agg_dataset.lazy().unique("agg_record")
+    )
+
+    map_labels = map_labels.with_columns(
+        pl.concat_list("hint_label").alias("hint_label")
+    )
+
+    ch_metadata = ch_metadata.join_where(map_labels, *pred_hint)    
+
     ch_metadata = reduce(
         lambda acc, _: _compute_next_hint_p(acc),
         range(len(datasets)),
