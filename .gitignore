@@ -40,4 +40,5 @@
 !experiments/benchmark/
 !experiments/benchmark/**/
 !experiments/benchmark/**/*.py
+!experiments/benchmark/**/*.sh
 !experiments/benchmark/**/*.yaml
