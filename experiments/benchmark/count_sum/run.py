@@ -132,7 +132,7 @@ def main():
         print(f"[{name}] Starting experiment...")
         print(f"  n_entries={cfg.n_entries}, n_cat={cfg.n_cat}, "
               f"n_num={cfg.n_num}")
-        print(f"  iterations={args.iterations}")
+        print(f"  iterations={cfg.iterations}")
 
         result_time, result_peak = benchmark.run_many(cfg, args.experiments)
         output_dir = Path(args.output_dir) / name

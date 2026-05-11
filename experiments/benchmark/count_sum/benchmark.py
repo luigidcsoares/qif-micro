@@ -26,10 +26,10 @@ def _benchmark_experiment(
             e.baseline, agg_col="num", group_by_col="cat"
         )
 
-        result_time = timing.measure(fn, iterations=iterations + 1)
+        _, result_time = timing.measure(fn, iterations=iterations + 1)
         result_time = result_time[1:] # Discard warm-up iteration
-            
-        result_time = pl.DataFrame({"step": ["all"], "time": result_time })
+
+        result_time = pl.DataFrame({"step": ["all"], "time": [result_time] })
         result_peak = pl.DataFrame({"peak" : [memory.current()]})
 
         return result_time, result_peak
